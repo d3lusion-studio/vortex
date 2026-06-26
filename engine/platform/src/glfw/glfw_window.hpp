@@ -13,6 +13,7 @@ public:
     [[nodiscard]] bool shouldClose() const override;
     void pollEvents() override;
     void getFramebufferSize(int& w, int& h) const override;
+    [[nodiscard]] NativeHandleKind nativeHandleKind() const override;
     [[nodiscard]] void* nativeWindowHandle()  const override;
     [[nodiscard]] void* nativeDisplayHandle() const override;
 

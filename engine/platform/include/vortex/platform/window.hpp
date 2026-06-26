@@ -10,6 +10,8 @@ struct WindowDesc {
     bool        resizable = true;
 };
 
+enum class NativeHandleKind { Unknown, Xlib, Wayland, Win32, Cocoa };
+
 class IWindow {
 public:
     virtual ~IWindow() = default;
@@ -18,6 +20,7 @@ public:
     virtual void pollEvents() = 0;
     virtual void getFramebufferSize(int& w, int& h) const = 0;
 
+    [[nodiscard]] virtual NativeHandleKind nativeHandleKind() const = 0;
     [[nodiscard]] virtual void* nativeWindowHandle()  const = 0;
     [[nodiscard]] virtual void* nativeDisplayHandle() const = 0;
 };

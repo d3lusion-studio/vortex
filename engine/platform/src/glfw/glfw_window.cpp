@@ -54,6 +54,21 @@ void GlfwWindow::getFramebufferSize(int& w, int& h) const {
     glfwGetFramebufferSize(m_window, &w, &h);
 }
 
+NativeHandleKind GlfwWindow::nativeHandleKind() const {
+    switch (glfwGetPlatform()) {
+#if defined(GLFW_EXPOSE_NATIVE_X11)
+        case GLFW_PLATFORM_X11:     return NativeHandleKind::Xlib;
+#endif
+#if defined(GLFW_EXPOSE_NATIVE_WAYLAND)
+        case GLFW_PLATFORM_WAYLAND: return NativeHandleKind::Wayland;
+#endif
+#if defined(GLFW_EXPOSE_NATIVE_WIN32)
+        case GLFW_PLATFORM_WIN32:   return NativeHandleKind::Win32;
+#endif
+        default:                    return NativeHandleKind::Unknown;
+    }
+}
+
 void* GlfwWindow::nativeWindowHandle() const {
     switch (glfwGetPlatform()) {
 #if defined(GLFW_EXPOSE_NATIVE_X11)
