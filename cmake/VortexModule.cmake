@@ -47,3 +47,34 @@ function(vortex_add_module name)
         endif()
     endif()
 endfunction()
+
+# ---------------------------------------------------------------------------
+# check_boundaries — verifies abstraction boundary discipline:
+#   • No file outside rhi/vulkan/ includes vulkan.h
+#   • No file outside platform/glfw/ includes glfw3.h
+# Run via:  cmake --build build/debug --target check_boundaries
+# ---------------------------------------------------------------------------
+if (UNIX)
+    add_custom_target(check_boundaries
+        COMMAND bash -c
+            "violations=0; \
+             bad=\$(grep -rn '#include.*GLFW/glfw' ${CMAKE_SOURCE_DIR}/engine \
+                   --include='*.hpp' --include='*.cpp' \
+                   | grep -v 'platform/src/glfw/'); \
+             if [ -n \"\$bad\" ]; then \
+                 echo 'BOUNDARY VIOLATION — GLFW leaked outside platform/src/glfw/:'; \
+                 echo \"\$bad\"; violations=1; fi; \
+             bad=\$(grep -rn '#include.*vulkan' ${CMAKE_SOURCE_DIR}/engine \
+                   --include='*.hpp' --include='*.cpp' -i \
+                   | grep -v 'rhi/vulkan/'); \
+             if [ -n \"\$bad\" ]; then \
+                 echo 'BOUNDARY VIOLATION — Vulkan leaked outside rhi/vulkan/:'; \
+                 echo \"\$bad\"; violations=1; fi; \
+             if [ \$violations -eq 0 ]; then \
+                 echo 'OK: abstraction boundaries are clean.'; fi; \
+             exit \$violations"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Checking abstraction boundary violations..."
+        VERBATIM
+    )
+endif()
