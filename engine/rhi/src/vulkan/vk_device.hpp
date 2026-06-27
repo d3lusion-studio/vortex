@@ -5,13 +5,17 @@
 
 #include "vortex/rhi/device.hpp"
 
+#include <atomic>
 #include <functional>
+#include <memory>
 
 namespace vortex::pf { class IWindow; }
 
 namespace vortex::rhi::vk {
 
 class VulkanSwapchain;
+
+inline constexpr u32 kMaxSecondaries = 64;
 
 class VulkanDevice final : public IGraphicsDevice {
 public:
@@ -43,6 +47,11 @@ public:
     void endFrame() override;
 
     void waitIdle() override;
+
+    [[nodiscard]] ICommandList* acquireSecondaryCommandList() override;
+    void executeSecondary(ICommandList& primary, ICommandList* const* lists, u32 count) override;
+
+    [[nodiscard]] f64 gpuFrameTimeMs() const override { return m_gpuFrameTimeMs; }
 
     [[nodiscard]] VkDevice         vkDevice()      const { return m_device; }
     [[nodiscard]] VkPhysicalDevice physicalDevice() const { return m_physicalDevice; }
@@ -78,14 +87,30 @@ private:
     VkQueue m_presentQueue  = VK_NULL_HANDLE;
     u32     m_graphicsQueueFamily = 0;
 
+    struct SecondaryRecorder {
+        VkCommandPool     pool = VK_NULL_HANDLE;
+        VkCommandBuffer   cmd  = VK_NULL_HANDLE;
+        VulkanCommandList list;
+    };
+
     struct FrameData {
         VkCommandPool   pool           = VK_NULL_HANDLE;
         VkCommandBuffer cmd            = VK_NULL_HANDLE;
         VkSemaphore     imageAvailable = VK_NULL_HANDLE;
         VkFence         inFlight       = VK_NULL_HANDLE;
+
+        std::unique_ptr<SecondaryRecorder> secondaries[kMaxSecondaries];
+        std::atomic<u32>                   secondaryNext{0};
+        bool                               timestampWritten = false;
     };
     FrameData m_frames[kFramesInFlight];
     u32       m_currentFrame = 0;
+
+    // GPU timestamp profiling (two queries per frame in flight: start + end).
+    VkQueryPool m_timestampPool      = VK_NULL_HANDLE;
+    f32         m_timestampPeriodNs  = 0.0f;
+    bool        m_timestampsSupported = false;
+    f64         m_gpuFrameTimeMs     = 0.0;
 
     // One-off transfer submissions (staging copies).
     VkCommandPool m_uploadPool  = VK_NULL_HANDLE;

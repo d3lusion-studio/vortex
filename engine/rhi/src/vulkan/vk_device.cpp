@@ -125,6 +125,30 @@ VulkanDevice::VulkanDevice(pf::IWindow& window) {
     poolCI.pPoolSizes    = &poolSize;
     VK_CHECK(vkCreateDescriptorPool(m_device, &poolCI, nullptr, &m_descriptorPool));
 
+    {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
+        m_timestampPeriodNs = props.limits.timestampPeriod;
+
+        u32 qfCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &qfCount, nullptr);
+        std::vector<VkQueueFamilyProperties> qfs(qfCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &qfCount, qfs.data());
+        const bool validBits = m_graphicsQueueFamily < qfCount &&
+                               qfs[m_graphicsQueueFamily].timestampValidBits > 0;
+        m_timestampsSupported = m_timestampPeriodNs > 0.0f && validBits;
+
+        if (m_timestampsSupported) {
+            VkQueryPoolCreateInfo qci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qci.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+            qci.queryCount = 2 * kFramesInFlight;
+            VK_CHECK(vkCreateQueryPool(m_device, &qci, nullptr, &m_timestampPool));
+            VORTEX_INFO("RHI", "GPU timestamps enabled (period %.2f ns)", m_timestampPeriodNs);
+        } else {
+            VORTEX_WARN("RHI", "GPU timestamps unsupported on this queue");
+        }
+    }
+
     VORTEX_INFO("RHI", "Vulkan device initialised");
 }
 
@@ -156,7 +180,11 @@ VulkanDevice::~VulkanDevice() {
     vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(m_device, m_materialSetLayout, nullptr);
 
+    if (m_timestampPool) vkDestroyQueryPool(m_device, m_timestampPool, nullptr);
+
     for (u32 i = 0; i < kFramesInFlight; ++i) {
+        for (auto& rec : m_frames[i].secondaries)
+            if (rec) vkDestroyCommandPool(m_device, rec->pool, nullptr);   // frees its CB too
         vkDestroyFence(m_device, m_frames[i].inFlight, nullptr);
         vkDestroySemaphore(m_device, m_frames[i].imageAvailable, nullptr);
         vkDestroyCommandPool(m_device, m_frames[i].pool, nullptr);
@@ -575,6 +603,16 @@ FrameContext VulkanDevice::beginFrame(ISwapchain& scBase) {
 
     VK_CHECK(vkWaitForFences(m_device, 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
 
+    // The fence guarantees this slot's previous submission finished, so its
+    // timestamps are now readable.
+    if (m_timestampsSupported && frame.timestampWritten) {
+        u64 ts[2] = {0, 0};
+        if (vkGetQueryPoolResults(m_device, m_timestampPool, 2 * m_currentFrame, 2,
+                                  sizeof(ts), ts, sizeof(u64), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
+            ts[1] > ts[0])
+            m_gpuFrameTimeMs = static_cast<f64>(ts[1] - ts[0]) * m_timestampPeriodNs / 1.0e6;
+    }
+
     if (sc.needsRecreate()) {
         vkDeviceWaitIdle(m_device);
         if (!sc.recreate()) return fc;
@@ -599,6 +637,16 @@ FrameContext VulkanDevice::beginFrame(ISwapchain& scBase) {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(frame.cmd, &bi));
 
+    // Reset + write the frame-start timestamp (outside any render pass).
+    if (m_timestampsSupported) {
+        vkCmdResetQueryPool(frame.cmd, m_timestampPool, 2 * m_currentFrame, 2);
+        vkCmdWriteTimestamp(frame.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            m_timestampPool, 2 * m_currentFrame);
+        frame.timestampWritten = true;
+    }
+
+    frame.secondaryNext.store(0, std::memory_order_relaxed);   // recycle secondary recorders
+
     m_cmdList.bind(this, frame.cmd);
     m_frameSwapchain  = &sc;
     m_frameImageIndex = imageIndex;
@@ -619,6 +667,11 @@ void VulkanDevice::endFrame() {
     VulkanSwapchain& sc = *m_frameSwapchain;
 
     m_cmdList.transitionToPresent(sc.textureForImage(m_frameImageIndex));
+
+    if (m_timestampsSupported)
+        vkCmdWriteTimestamp(frame.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                            m_timestampPool, 2 * m_currentFrame + 1);
+
     VK_CHECK(vkEndCommandBuffer(frame.cmd));
 
     VkSemaphore waitSem   = frame.imageAvailable;
@@ -654,6 +707,67 @@ void VulkanDevice::endFrame() {
 
 void VulkanDevice::waitIdle() {
     if (m_device) vkDeviceWaitIdle(m_device);
+}
+
+ICommandList* VulkanDevice::acquireSecondaryCommandList() {
+    FrameData& frame = m_frames[m_currentFrame];
+    const u32  idx   = frame.secondaryNext.fetch_add(1, std::memory_order_relaxed);
+    VORTEX_ASSERT(idx < kMaxSecondaries, "exceeded kMaxSecondaries secondary command lists");
+    if (idx >= kMaxSecondaries) return nullptr;
+
+    // Each recorder owns its pool, so this thread can record without locking. The
+    // index is unique per acquire, so creation here is touched by one thread only.
+    SecondaryRecorder* rec = frame.secondaries[idx].get();
+    if (!rec) {
+        auto created = std::make_unique<SecondaryRecorder>();
+        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pci.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        pci.queueFamilyIndex = m_graphicsQueueFamily;
+        VK_CHECK(vkCreateCommandPool(m_device, &pci, nullptr, &created->pool));
+
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool        = created->pool;
+        ai.level              = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+        ai.commandBufferCount = 1;
+        VK_CHECK(vkAllocateCommandBuffers(m_device, &ai, &created->cmd));
+
+        rec = created.get();
+        frame.secondaries[idx] = std::move(created);
+    }
+
+    VK_CHECK(vkResetCommandPool(m_device, rec->pool, 0));
+
+    // Dynamic rendering: the secondary inherits the colour attachment format.
+    VkFormat colorFormat = toVkFormat(m_frameSwapchain->format());
+    VkCommandBufferInheritanceRenderingInfo inhRender{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};
+    inhRender.colorAttachmentCount    = 1;
+    inhRender.pColorAttachmentFormats = &colorFormat;
+    inhRender.rasterizationSamples    = VK_SAMPLE_COUNT_1_BIT;
+
+    VkCommandBufferInheritanceInfo inh{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+    inh.pNext = &inhRender;
+
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+               VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+    bi.pInheritanceInfo = &inh;
+    VK_CHECK(vkBeginCommandBuffer(rec->cmd, &bi));
+
+    rec->list.bind(this, rec->cmd);
+    return &rec->list;
+}
+
+void VulkanDevice::executeSecondary(ICommandList& primary, ICommandList* const* lists, u32 count) {
+    if (count == 0) return;
+    std::vector<VkCommandBuffer> cbs(count);
+    for (u32 i = 0; i < count; ++i) {
+        auto* vl = static_cast<VulkanCommandList*>(lists[i]);
+        cbs[i]   = vl->commandBuffer();
+        VK_CHECK(vkEndCommandBuffer(cbs[i]));
+    }
+    auto* prim = static_cast<VulkanCommandList*>(&primary);
+    vkCmdExecuteCommands(prim->commandBuffer(), count, cbs.data());
 }
 
 }

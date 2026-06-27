@@ -1,5 +1,6 @@
 #include "vortex/renderer/sprite_batch.hpp"
 
+#include "vortex/core/profiler.hpp"
 #include "vortex/rhi/command_list.hpp"
 #include "vortex/rhi/device.hpp"
 #include "vortex/rhi/rhi_enums.hpp"
@@ -126,32 +127,42 @@ rhi::BindGroupHandle SpriteBatch::bindGroupFor(rhi::TextureHandle texture) {
 void SpriteBatch::end(rhi::ICommandList& cmd) {
     if (m_items.empty()) return;
 
-    std::stable_sort(m_items.begin(), m_items.end(),
-                     [](const RenderItem& a, const RenderItem& b) {
-                         if (a.layer != b.layer) return a.layer < b.layer;
-                         return textureKey(a.texture) < textureKey(b.texture);
-                     });
+    {
+        VORTEX_PROFILE_ZONE("batch.sort");
+        const auto order = [](const RenderItem& a, const RenderItem& b) {
+            if (a.layer != b.layer) return a.layer < b.layer;
+            return textureKey(a.texture) < textureKey(b.texture);
+        };
+        if (!std::is_sorted(m_items.begin(), m_items.end(), order))
+            std::stable_sort(m_items.begin(), m_items.end(), order);
+    }
 
     const u32 spriteCount = std::min(static_cast<u32>(m_items.size()), m_maxSprites);
 
-    // Unit quad centred at the origin; the item transform places it in the world.
     static constexpr Vec2 kCorners[4] = {
         {-0.5f, 0.5f}, {0.5f, 0.5f}, {0.5f, -0.5f}, {-0.5f, -0.5f}};
 
-    m_vertices.clear();
-    for (u32 i = 0; i < spriteCount; ++i) {
-        const RenderItem& it = m_items[i];
-        const f32 uMin = it.uv.x, vMin = it.uv.y;
-        const f32 uMax = it.uv.x + it.uv.width, vMax = it.uv.y + it.uv.height;
-        const Vec2 uvs[4] = {{uMin, vMin}, {uMax, vMin}, {uMax, vMax}, {uMin, vMax}};
-        for (int c = 0; c < 4; ++c) {
-            const Vec4 p = it.transform * Vec4{kCorners[c].x, kCorners[c].y, 0.0f, 1.0f};
-            m_vertices.push_back({{p.x, p.y}, uvs[c], it.color});
+    {
+        VORTEX_PROFILE_ZONE("batch.vertices");
+        m_vertices.resize(static_cast<usize>(spriteCount) * 4);
+        for (u32 i = 0; i < spriteCount; ++i) {
+            const RenderItem& it = m_items[i];
+            const f32 uMin = it.uv.x, vMin = it.uv.y;
+            const f32 uMax = it.uv.x + it.uv.width, vMax = it.uv.y + it.uv.height;
+            const Vec2 uvs[4] = {{uMin, vMin}, {uMax, vMin}, {uMax, vMax}, {uMin, vMax}};
+            Vertex* v = &m_vertices[static_cast<usize>(i) * 4];
+            for (int c = 0; c < 4; ++c) {
+                const Vec4 p = it.transform * Vec4{kCorners[c].x, kCorners[c].y, 0.0f, 1.0f};
+                v[c] = {{p.x, p.y}, uvs[c], it.color};
+            }
         }
     }
 
     rhi::BufferHandle vbo = m_vertexBuffers[m_frame];
-    m_device.updateBuffer(vbo, m_vertices.data(), m_vertices.size() * sizeof(Vertex));
+    {
+        VORTEX_PROFILE_ZONE("batch.upload");
+        m_device.updateBuffer(vbo, m_vertices.data(), m_vertices.size() * sizeof(Vertex));
+    }
 
     cmd.setPipeline(m_pipeline);
     cmd.pushConstants(&m_viewProjection, sizeof(Mat4));

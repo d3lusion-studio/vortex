@@ -16,6 +16,8 @@ public:
         m_cmd    = cmd;
     }
 
+    [[nodiscard]] VkCommandBuffer commandBuffer() const { return m_cmd; }
+
     void beginRenderPass(const RenderPassDesc&) override;
     void endRenderPass() override;
 

@@ -82,6 +82,7 @@ struct RenderPassDesc {
     ColorAttachment color;
     u32             width  = 0;
     u32             height = 0;
+    bool            secondaryContents = false;
 };
 
 struct FrameContext {

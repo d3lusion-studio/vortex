@@ -56,6 +56,8 @@ void VulkanCommandList::beginRenderPass(const RenderPassDesc& desc) {
     ri.layerCount           = 1;
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments    = &color;
+    if (desc.secondaryContents)
+        ri.flags |= VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;
     vkCmdBeginRendering(m_cmd, &ri);
 }
 

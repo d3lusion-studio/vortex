@@ -42,6 +42,13 @@ public:
     virtual void endFrame() = 0;
 
     virtual void waitIdle() = 0;
+
+    [[nodiscard]] virtual ICommandList* acquireSecondaryCommandList() = 0;
+
+    virtual void executeSecondary(ICommandList& primary,
+                                  ICommandList* const* lists, u32 count) = 0;
+
+    [[nodiscard]] virtual f64 gpuFrameTimeMs() const = 0;
 };
 
 [[nodiscard]] std::unique_ptr<IGraphicsDevice> createDevice(GraphicsAPI api, pf::IWindow& window);

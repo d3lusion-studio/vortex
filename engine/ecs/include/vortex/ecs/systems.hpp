@@ -3,18 +3,21 @@
 
 #include <vector>
 
+namespace vortex::jobs { class JobSystem; }
+
 namespace vortex::ecs {
 
 class Registry;
 
-// Compose each entity's local Transform2D with its parents and write the result
-// into WorldTransform2D. Parents are resolved before children (memoised per
-// call), so update order within the view does not matter.
 void updateTransforms(Registry& registry);
 
-// Read-only pass: gather (WorldTransform2D + SpriteComp) into a flat RenderItem
-// array the renderer can consume directly. This is the ECS -> renderer bridge;
-// the renderer never touches the registry.
 void extractSprites(Registry& registry, std::vector<renderer::RenderItem>& out);
+
+// Same output as extractSprites, but the per-item matrix math is spread across
+// the job system. Gathering the matching entities is serial (cheap); only the
+// transform composition — the part that scales with entity count — runs in
+// parallel. `out` ends up the same size and order as the serial version.
+void extractSpritesParallel(Registry& registry, jobs::JobSystem& jobs,
+                            std::vector<renderer::RenderItem>& out);
 
 }

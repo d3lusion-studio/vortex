@@ -29,6 +29,16 @@ FetchContent_Declare(box2d
         GIT_SHALLOW    ON)
 FetchContent_MakeAvailable(box2d)
 
+if (VORTEX_WITH_TRACY)
+    set(TRACY_ENABLE ON  CACHE BOOL "" FORCE)
+    set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(tracy
+            GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+            GIT_TAG        v0.11.1
+            GIT_SHALLOW    ON)
+    FetchContent_MakeAvailable(tracy)
+endif ()
+
 if (VORTEX_BUILD_TESTS)
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
     set(DOCTEST_NO_INSTALL ON CACHE BOOL "" FORCE)

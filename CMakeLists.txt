@@ -23,6 +23,7 @@ option(VORTEX_BUILD_EXAMPLES "Build Vortex example" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_BUILD_TESTS "Build Vortex test" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_INSTALL "Generate install/export rules" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
+option(VORTEX_WITH_TRACY "Enable the Tracy profiler backend" OFF)
 
 set(VORTEX_RHI_BACKEND "Vulkan" CACHE STRING "Graphics Backend")
 set_property(CACHE VORTEX_RHI_BACKEND PROPERTY STRINGS Vulkan DX12 Metal WebGPU)

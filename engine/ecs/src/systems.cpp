@@ -2,6 +2,7 @@
 
 #include "vortex/ecs/components.hpp"
 #include "vortex/ecs/registry.hpp"
+#include "vortex/jobs/job_system.hpp"
 
 #include <functional>
 
@@ -55,6 +56,29 @@ void extractSprites(Registry& registry, std::vector<renderer::RenderItem>& out) 
                 .layer     = sprite.layer,
             });
         });
+}
+
+void extractSpritesParallel(Registry& registry, jobs::JobSystem& jobs,
+                            std::vector<renderer::RenderItem>& out) {
+    struct Pair { const WorldTransform2D* world; const SpriteComp* sprite; };
+    std::vector<Pair> pairs;
+    registry.view<WorldTransform2D, SpriteComp>(
+        [&](Entity, WorldTransform2D& world, SpriteComp& sprite) {
+            pairs.push_back({&world, &sprite});
+        });
+
+    out.resize(pairs.size());
+    jobs.parallelFor(pairs.size(), [&](usize i) {
+        const WorldTransform2D& world  = *pairs[i].world;
+        const SpriteComp&       sprite = *pairs[i].sprite;
+        out[i] = {
+            .transform = world.matrix * Mat4::scaling(sprite.size.x, sprite.size.y, 1.0f),
+            .color     = sprite.color,
+            .uv        = sprite.uv,
+            .texture   = sprite.texture,
+            .layer     = sprite.layer,
+        };
+    });
 }
 
 }

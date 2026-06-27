@@ -5,4 +5,5 @@ vortex_add_module(ecs
         Vortex::core
         Vortex::rhi
         Vortex::renderer
+        Vortex::jobs
 )
