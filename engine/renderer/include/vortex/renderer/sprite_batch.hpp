@@ -5,6 +5,7 @@
 #include "vortex/core/math/vec4.hpp"
 #include "vortex/core/types.hpp"
 #include "vortex/renderer/render_item.hpp"
+#include "vortex/rhi/rhi_enums.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
 
 #include <unordered_map>
@@ -13,7 +14,6 @@
 namespace vortex::rhi {
 class IGraphicsDevice;
 class ICommandList;
-enum class Format;
 }
 
 namespace vortex::renderer {
@@ -63,7 +63,7 @@ private:
     rhi::PipelineHandle m_pipeline;
     rhi::SamplerHandle  m_sampler;
     rhi::BufferHandle   m_indexBuffer;
-    rhi::BufferHandle   m_vertexBuffers[2];   // one per frame in flight
+    rhi::BufferHandle   m_vertexBuffers[rhi::kMaxFramesInFlight];   // one per frame in flight
     u32                 m_frame = 0;
 
     std::unordered_map<u64, rhi::BindGroupHandle> m_bindGroupCache;

@@ -25,7 +25,7 @@ VkSurfaceKHR createNativeSurface(VkInstance instance,
             ci.dpy    = static_cast<Display*>(displayHandle);
             ci.window = static_cast<::Window>(reinterpret_cast<std::uintptr_t>(windowHandle));
             if (vkCreateXlibSurfaceKHR(instance, &ci, nullptr, &surface) != VK_SUCCESS) {
-                vortex::log(vortex::LogLevel::Error, "RHI", "vkCreateXlibSurfaceKHR failed");
+                VORTEX_ERROR("RHI", "vkCreateXlibSurfaceKHR failed");
                 return VK_NULL_HANDLE;
             }
             return surface;
@@ -37,7 +37,7 @@ VkSurfaceKHR createNativeSurface(VkInstance instance,
             ci.display = static_cast<wl_display*>(displayHandle);
             ci.surface = static_cast<wl_surface*>(windowHandle);
             if (vkCreateWaylandSurfaceKHR(instance, &ci, nullptr, &surface) != VK_SUCCESS) {
-                vortex::log(vortex::LogLevel::Error, "RHI", "vkCreateWaylandSurfaceKHR failed");
+                VORTEX_ERROR("RHI", "vkCreateWaylandSurfaceKHR failed");
                 return VK_NULL_HANDLE;
             }
             return surface;
@@ -47,8 +47,7 @@ VkSurfaceKHR createNativeSurface(VkInstance instance,
             break;
     }
 
-    vortex::log(vortex::LogLevel::Error, "RHI",
-                "Unsupported native window kind for Vulkan surface creation");
+    VORTEX_ERROR("RHI", "Unsupported native window kind for Vulkan surface creation");
     return VK_NULL_HANDLE;
 }
 

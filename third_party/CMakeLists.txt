@@ -1,5 +1,14 @@
 include(FetchContent)
 
+FetchContent_Declare(stb
+        GIT_REPOSITORY https://github.com/nothings/stb.git
+        GIT_TAG        master
+        GIT_SHALLOW    ON)
+FetchContent_MakeAvailable(stb)
+add_library(vortex_stb INTERFACE)
+target_include_directories(vortex_stb INTERFACE ${stb_SOURCE_DIR})
+add_library(Vortex::stb ALIAS vortex_stb)
+
 if (VORTEX_BUILD_TESTS)
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
     set(DOCTEST_NO_INSTALL ON CACHE BOOL "" FORCE)

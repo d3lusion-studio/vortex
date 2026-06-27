@@ -102,6 +102,6 @@ namespace vortex::rhi::vk {
     return VK_ATTACHMENT_STORE_OP_STORE;
 }
 
-inline constexpr u32 kFramesInFlight = 2;
+inline constexpr u32 kFramesInFlight = kMaxFramesInFlight;
 
 }
