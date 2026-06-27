@@ -20,6 +20,8 @@ public:
     void endRenderPass() override;
 
     void setPipeline(PipelineHandle) override;
+    void setBindGroup(u32 slot, BindGroupHandle) override;
+    void pushConstants(const void* data, u32 size) override;
     void setViewport(const Viewport&) override;
     void setScissor(i32 x, i32 y, u32 width, u32 height) override;
 
@@ -33,9 +35,9 @@ public:
     void transitionToPresent(TextureHandle);
 
 private:
-    VulkanDevice*   m_device = nullptr;
-    VkCommandBuffer m_cmd    = VK_NULL_HANDLE;
-    TextureHandle   m_currentColorTarget;
+    VulkanDevice*    m_device        = nullptr;
+    VkCommandBuffer  m_cmd           = VK_NULL_HANDLE;
+    VkPipelineLayout m_currentLayout = VK_NULL_HANDLE;
 };
 
 }

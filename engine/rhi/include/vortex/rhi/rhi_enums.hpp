@@ -50,4 +50,21 @@ enum class VertexFormat { Float1, Float2, Float3, Float4, UNorm4x8 };
 
 enum class CullMode { None, Front, Back };
 
-} // namespace vortex::rhi
+enum class TextureUsage : u32 {
+    Sampled      = 1u << 0,
+    RenderTarget = 1u << 1,
+};
+
+[[nodiscard]] constexpr TextureUsage operator|(TextureUsage a, TextureUsage b) noexcept {
+    return static_cast<TextureUsage>(static_cast<u32>(a) | static_cast<u32>(b));
+}
+[[nodiscard]] constexpr bool hasFlag(TextureUsage value, TextureUsage flag) noexcept {
+    return (static_cast<u32>(value) & static_cast<u32>(flag)) != 0;
+}
+
+enum class Filter      { Nearest, Linear };
+enum class AddressMode { Repeat, ClampToEdge, MirroredRepeat };
+
+inline constexpr u32 kMaxFramesInFlight = 2;
+
+}

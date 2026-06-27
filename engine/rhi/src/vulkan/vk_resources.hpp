@@ -21,10 +21,19 @@ struct VulkanPipeline {
 struct VulkanTexture {
     VkImage       image            = VK_NULL_HANDLE;
     VkImageView   view             = VK_NULL_HANDLE;
+    VmaAllocation allocation       = VK_NULL_HANDLE;  // null for swapchain-owned images
     VkFormat      format           = VK_FORMAT_UNDEFINED;
     VkExtent2D    extent           = {0, 0};
     VkImageLayout currentLayout    = VK_IMAGE_LAYOUT_UNDEFINED;
     bool          isSwapchainImage = false;
+};
+
+struct VulkanSampler {
+    VkSampler sampler = VK_NULL_HANDLE;
+};
+
+struct VulkanBindGroup {
+    VkDescriptorSet set = VK_NULL_HANDLE;
 };
 
 template <typename T, typename Tag>
@@ -41,7 +50,7 @@ public:
             m_slots[index].alive = true;
         } else {
             index = static_cast<u32>(m_slots.size());
-            m_slots.push_back({value, m_slots.empty() ? 0u : 0u, true});
+            m_slots.push_back({value, 0u, true});
         }
         return HandleT{.index = index, .generation = m_slots[index].generation};
     }

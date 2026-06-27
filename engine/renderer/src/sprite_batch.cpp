@@ -1,0 +1,165 @@
+#include "vortex/renderer/sprite_batch.hpp"
+
+#include "vortex/rhi/command_list.hpp"
+#include "vortex/rhi/device.hpp"
+#include "vortex/rhi/rhi_enums.hpp"
+#include "vortex/rhi/rhi_types.hpp"
+
+#include "sprite_vert_spv.h"
+#include "sprite_frag_spv.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+namespace vortex::renderer {
+
+namespace {
+
+std::vector<std::byte> toBytes(const unsigned char* data, unsigned long size) {
+    std::vector<std::byte> out(size);
+    std::memcpy(out.data(), data, size);
+    return out;
+}
+
+u64 textureKey(rhi::TextureHandle h) {
+    return (static_cast<u64>(h.generation) << 32) | h.index;
+}
+
+}
+
+SpriteBatch::SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, u32 maxSprites)
+    : m_device(device), m_maxSprites(maxSprites) {
+
+    m_sampler = m_device.createSampler({.minFilter = rhi::Filter::Linear,
+                                        .magFilter = rhi::Filter::Linear,
+                                        .addressU  = rhi::AddressMode::ClampToEdge,
+                                        .addressV  = rhi::AddressMode::ClampToEdge});
+
+    rhi::GraphicsPipelineDesc pd;
+    pd.vertexSpirv         = toBytes(sprite_vert_spv, sprite_vert_spv_size);
+    pd.fragmentSpirv       = toBytes(sprite_frag_spv, sprite_frag_spv_size);
+    pd.vertexLayout.stride = sizeof(Vertex);
+    pd.vertexLayout.attributes = {
+        {.location = 0, .format = rhi::VertexFormat::Float2, .offset = offsetof(Vertex, pos)},
+        {.location = 1, .format = rhi::VertexFormat::Float2, .offset = offsetof(Vertex, uv)},
+        {.location = 2, .format = rhi::VertexFormat::Float4, .offset = offsetof(Vertex, color)},
+    };
+    pd.topology           = rhi::PrimitiveTopology::TriangleList;
+    pd.cull               = rhi::CullMode::None;
+    pd.colorFormat        = colorFormat;
+    pd.alphaBlend         = true;
+    pd.hasMaterialTexture = true;
+    pd.pushConstantSize   = sizeof(Mat4);
+    pd.debugName          = "sprite_pipeline";
+    m_pipeline = m_device.createGraphicsPipeline(pd);
+
+    std::vector<u32> indices(static_cast<usize>(maxSprites) * 6);
+    for (u32 q = 0; q < maxSprites; ++q) {
+        const u32 v = q * 4;
+        u32* idx = &indices[static_cast<usize>(q) * 6];
+        idx[0] = v + 0; idx[1] = v + 1; idx[2] = v + 2;
+        idx[3] = v + 2; idx[4] = v + 3; idx[5] = v + 0;
+    }
+    m_indexBuffer = m_device.createBuffer(
+        {.size = indices.size() * sizeof(u32), .usage = rhi::BufferUsage::Index,
+         .domain = rhi::MemoryDomain::Device, .debugName = "sprite_indices"},
+        indices.data());
+
+    for (u32 i = 0; i < rhi::kMaxFramesInFlight; ++i) {
+        m_vertexBuffers[i] = m_device.createBuffer(
+            {.size = static_cast<u64>(maxSprites) * 4 * sizeof(Vertex),
+             .usage = rhi::BufferUsage::Vertex, .domain = rhi::MemoryDomain::Upload,
+             .debugName = "sprite_vertices"});
+    }
+
+    m_vertices.reserve(static_cast<usize>(maxSprites) * 4);
+}
+
+SpriteBatch::~SpriteBatch() {
+    m_device.waitIdle();
+    for (auto& [key, bg] : m_bindGroupCache) m_device.destroyBindGroup(bg);
+    for (u32 i = 0; i < rhi::kMaxFramesInFlight; ++i) m_device.destroyBuffer(m_vertexBuffers[i]);
+    m_device.destroyBuffer(m_indexBuffer);
+    m_device.destroyPipeline(m_pipeline);
+    m_device.destroySampler(m_sampler);
+}
+
+void SpriteBatch::begin(const Mat4& viewProjection) {
+    m_viewProjection = viewProjection;
+    m_sprites.clear();
+    m_drawCalls = 0;
+}
+
+void SpriteBatch::draw(const Sprite& sprite) {
+    m_sprites.push_back(sprite);
+}
+
+void SpriteBatch::drawSprite(rhi::TextureHandle texture, Vec2 position, Vec2 size,
+                             Vec4 color, Rect uv, i32 layer) {
+    m_sprites.push_back({.position = position, .size = size, .rotation = 0.0f,
+                         .color = color, .uv = uv, .texture = texture, .layer = layer});
+}
+
+rhi::BindGroupHandle SpriteBatch::bindGroupFor(rhi::TextureHandle texture) {
+    const u64 key = textureKey(texture);
+    auto it = m_bindGroupCache.find(key);
+    if (it != m_bindGroupCache.end()) return it->second;
+    rhi::BindGroupHandle bg = m_device.createBindGroup({.texture = texture, .sampler = m_sampler});
+    m_bindGroupCache.emplace(key, bg);
+    return bg;
+}
+
+void SpriteBatch::end(rhi::ICommandList& cmd) {
+    if (m_sprites.empty()) return;
+
+    std::stable_sort(m_sprites.begin(), m_sprites.end(),
+                     [](const Sprite& a, const Sprite& b) {
+                         if (a.layer != b.layer) return a.layer < b.layer;
+                         return textureKey(a.texture) < textureKey(b.texture);
+                     });
+
+    const u32 spriteCount = std::min(static_cast<u32>(m_sprites.size()), m_maxSprites);
+
+    m_vertices.clear();
+    for (u32 i = 0; i < spriteCount; ++i) {
+        const Sprite& s = m_sprites[i];
+        const f32 hx = s.size.x * 0.5f;
+        const f32 hy = s.size.y * 0.5f;
+        const f32 c  = std::cos(s.rotation);
+        const f32 sn = std::sin(s.rotation);
+        auto corner = [&](f32 lx, f32 ly) -> Vec2 {
+            return {s.position.x + lx * c - ly * sn, s.position.y + lx * sn + ly * c};
+        };
+        const f32 uMin = s.uv.x, vMin = s.uv.y;
+        const f32 uMax = s.uv.x + s.uv.width, vMax = s.uv.y + s.uv.height;
+        m_vertices.push_back({corner(-hx,  hy), {uMin, vMin}, s.color});
+        m_vertices.push_back({corner( hx,  hy), {uMax, vMin}, s.color});
+        m_vertices.push_back({corner( hx, -hy), {uMax, vMax}, s.color});
+        m_vertices.push_back({corner(-hx, -hy), {uMin, vMax}, s.color});
+    }
+
+    rhi::BufferHandle vbo = m_vertexBuffers[m_frame];
+    m_device.updateBuffer(vbo, m_vertices.data(), m_vertices.size() * sizeof(Vertex));
+
+    cmd.setPipeline(m_pipeline);
+    cmd.pushConstants(&m_viewProjection, sizeof(Mat4));
+    cmd.setVertexBuffer(0, vbo);
+    cmd.setIndexBuffer(m_indexBuffer, rhi::IndexType::U32);
+
+    u32 runStart = 0;
+    while (runStart < spriteCount) {
+        const rhi::TextureHandle tex = m_sprites[runStart].texture;
+        u32 runEnd = runStart + 1;
+        while (runEnd < spriteCount && m_sprites[runEnd].texture == tex) ++runEnd;
+
+        cmd.setBindGroup(0, bindGroupFor(tex));
+        cmd.drawIndexed((runEnd - runStart) * 6, 1, runStart * 6, 0, 0);
+        ++m_drawCalls;
+        runStart = runEnd;
+    }
+
+    m_frame = (m_frame + 1) % rhi::kMaxFramesInFlight;
+}
+
+}

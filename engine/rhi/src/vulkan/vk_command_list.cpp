@@ -38,7 +38,6 @@ void transitionImage(VkCommandBuffer cmd, VkImage image,
 void VulkanCommandList::beginRenderPass(const RenderPassDesc& desc) {
     VulkanTexture* tex = m_device->getTexture(desc.color.target);
     if (!tex) return;
-    m_currentColorTarget = desc.color.target;
 
     transitionImage(m_cmd, tex->image, VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -65,8 +64,22 @@ void VulkanCommandList::endRenderPass() {
 }
 
 void VulkanCommandList::setPipeline(PipelineHandle h) {
-    if (VulkanPipeline* p = m_device->getPipeline(h))
+    if (VulkanPipeline* p = m_device->getPipeline(h)) {
         vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline);
+        m_currentLayout = p->layout;
+    }
+}
+
+void VulkanCommandList::setBindGroup(u32 slot, BindGroupHandle h) {
+    VulkanBindGroup* g = m_device->getBindGroup(h);
+    if (!g || m_currentLayout == VK_NULL_HANDLE) return;
+    vkCmdBindDescriptorSets(m_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_currentLayout,
+                            slot, 1, &g->set, 0, nullptr);
+}
+
+void VulkanCommandList::pushConstants(const void* data, u32 size) {
+    if (m_currentLayout == VK_NULL_HANDLE) return;
+    vkCmdPushConstants(m_cmd, m_currentLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, size, data);
 }
 
 void VulkanCommandList::setViewport(const Viewport& vp) {

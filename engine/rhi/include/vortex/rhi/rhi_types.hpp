@@ -15,6 +15,26 @@ struct BufferDesc {
     const char*  debugName = nullptr;
 };
 
+struct TextureDesc {
+    u32          width  = 0;
+    u32          height = 0;
+    Format       format = Format::R8G8B8A8_UNORM;
+    TextureUsage usage  = TextureUsage::Sampled;
+    const char*  debugName = nullptr;
+};
+
+struct SamplerDesc {
+    Filter      minFilter = Filter::Linear;
+    Filter      magFilter = Filter::Linear;
+    AddressMode addressU  = AddressMode::ClampToEdge;
+    AddressMode addressV  = AddressMode::ClampToEdge;
+};
+
+struct BindGroupDesc {
+    TextureHandle texture;
+    SamplerHandle sampler;
+};
+
 struct SwapchainDesc {
     u32         width  = 0;
     u32         height = 0;
@@ -39,6 +59,9 @@ struct GraphicsPipelineDesc {
     PrimitiveTopology      topology    = PrimitiveTopology::TriangleList;
     CullMode               cull        = CullMode::None;
     Format                 colorFormat = Format::B8G8R8A8_UNORM;
+    bool                   alphaBlend  = false;  // straight-alpha blending for sprites
+    bool                   hasMaterialTexture = false;  // set 0, binding 0: combined image sampler
+    u32                    pushConstantSize   = 0;       // vertex-stage push constant block bytes
     const char*            debugName   = nullptr;
 };
 

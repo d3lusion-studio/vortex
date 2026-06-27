@@ -23,6 +23,16 @@ public:
 
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc&, const void* initialData) override;
     void destroyBuffer(BufferHandle) override;
+    void updateBuffer(BufferHandle, const void* data, u64 size, u64 offset) override;
+
+    [[nodiscard]] TextureHandle createTexture(const TextureDesc&, const void* pixels) override;
+    void destroyTexture(TextureHandle) override;
+
+    [[nodiscard]] SamplerHandle createSampler(const SamplerDesc&) override;
+    void destroySampler(SamplerHandle) override;
+
+    [[nodiscard]] BindGroupHandle createBindGroup(const BindGroupDesc&) override;
+    void destroyBindGroup(BindGroupHandle) override;
 
     [[nodiscard]] PipelineHandle createGraphicsPipeline(const GraphicsPipelineDesc&) override;
     void destroyPipeline(PipelineHandle) override;
@@ -41,24 +51,28 @@ public:
     [[nodiscard]] VkQueue          graphicsQueue() const { return m_graphicsQueue; }
     [[nodiscard]] u32              graphicsQueueFamily() const { return m_graphicsQueueFamily; }
 
-    [[nodiscard]] VulkanBuffer*   getBuffer(BufferHandle h)     { return m_buffers.get(h); }
-    [[nodiscard]] VulkanPipeline* getPipeline(PipelineHandle h) { return m_pipelines.get(h); }
-    [[nodiscard]] VulkanTexture*  getTexture(TextureHandle h)   { return m_textures.get(h); }
+    [[nodiscard]] VulkanBuffer*    getBuffer(BufferHandle h)       { return m_buffers.get(h); }
+    [[nodiscard]] VulkanPipeline*  getPipeline(PipelineHandle h)   { return m_pipelines.get(h); }
+    [[nodiscard]] VulkanTexture*   getTexture(TextureHandle h)     { return m_textures.get(h); }
+    [[nodiscard]] VulkanSampler*   getSampler(SamplerHandle h)     { return m_samplers.get(h); }
+    [[nodiscard]] VulkanBindGroup* getBindGroup(BindGroupHandle h) { return m_bindGroups.get(h); }
 
-    [[nodiscard]] TextureHandle registerTexture(const VulkanTexture&) ;
+    [[nodiscard]] TextureHandle registerTexture(const VulkanTexture&);
     void unregisterTexture(TextureHandle);
 
 private:
     void createSurface(pf::IWindow& window);
     void immediateSubmit(const std::function<void(VkCommandBuffer)>& fn);
 
-    VkInstance               m_instance        = VK_NULL_HANDLE;
-    VkDebugUtilsMessengerEXT m_debugMessenger  = VK_NULL_HANDLE;
-    VkSurfaceKHR             m_surface         = VK_NULL_HANDLE;
-    VkPhysicalDevice         m_physicalDevice  = VK_NULL_HANDLE;
-    VkDevice                 m_device          = VK_NULL_HANDLE;
-    VmaAllocator             m_allocator       = VK_NULL_HANDLE;
-    VkPipelineCache          m_pipelineCache   = VK_NULL_HANDLE;
+    VkInstance               m_instance         = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT m_debugMessenger   = VK_NULL_HANDLE;
+    VkSurfaceKHR             m_surface          = VK_NULL_HANDLE;
+    VkPhysicalDevice         m_physicalDevice   = VK_NULL_HANDLE;
+    VkDevice                 m_device           = VK_NULL_HANDLE;
+    VmaAllocator             m_allocator        = VK_NULL_HANDLE;
+    VkPipelineCache          m_pipelineCache    = VK_NULL_HANDLE;
+    VkDescriptorPool         m_descriptorPool   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout    m_materialSetLayout = VK_NULL_HANDLE;  // set 0: combined image sampler
 
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue  = VK_NULL_HANDLE;
@@ -77,9 +91,11 @@ private:
     VkCommandPool m_uploadPool  = VK_NULL_HANDLE;
     VkFence       m_uploadFence = VK_NULL_HANDLE;
 
-    Pool<VulkanBuffer,   BufferTag>   m_buffers;
-    Pool<VulkanPipeline, PipelineTag> m_pipelines;
-    Pool<VulkanTexture,  TextureTag>  m_textures;
+    Pool<VulkanBuffer,    BufferTag>    m_buffers;
+    Pool<VulkanPipeline,  PipelineTag>  m_pipelines;
+    Pool<VulkanTexture,   TextureTag>   m_textures;
+    Pool<VulkanSampler,   SamplerTag>   m_samplers;
+    Pool<VulkanBindGroup, BindGroupTag> m_bindGroups;
 
     VulkanCommandList m_cmdList;
 

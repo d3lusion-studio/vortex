@@ -16,6 +16,8 @@ public:
     virtual void endRenderPass() = 0;
 
     virtual void setPipeline(PipelineHandle) = 0;
+    virtual void setBindGroup(u32 slot, BindGroupHandle) = 0;
+    virtual void pushConstants(const void* data, u32 size) = 0;
     virtual void setViewport(const Viewport&) = 0;
     virtual void setScissor(i32 x, i32 y, u32 width, u32 height) = 0;
 

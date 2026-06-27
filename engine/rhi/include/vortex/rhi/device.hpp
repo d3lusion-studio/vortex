@@ -20,6 +20,18 @@ public:
                                                     const void* initialData = nullptr) = 0;
     virtual void destroyBuffer(BufferHandle) = 0;
 
+    virtual void updateBuffer(BufferHandle, const void* data, u64 size, u64 offset = 0) = 0;
+
+    [[nodiscard]] virtual TextureHandle createTexture(const TextureDesc&,
+                                                      const void* pixels = nullptr) = 0;
+    virtual void destroyTexture(TextureHandle) = 0;
+
+    [[nodiscard]] virtual SamplerHandle createSampler(const SamplerDesc&) = 0;
+    virtual void destroySampler(SamplerHandle) = 0;
+
+    [[nodiscard]] virtual BindGroupHandle createBindGroup(const BindGroupDesc&) = 0;
+    virtual void destroyBindGroup(BindGroupHandle) = 0;
+
     [[nodiscard]] virtual PipelineHandle createGraphicsPipeline(const GraphicsPipelineDesc&) = 0;
     virtual void destroyPipeline(PipelineHandle) = 0;
 

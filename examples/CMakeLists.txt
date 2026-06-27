@@ -31,3 +31,6 @@ endforeach ()
 add_custom_target(triangle_shaders DEPENDS ${_spv_outputs})
 add_dependencies(triangle triangle_shaders)
 target_compile_definitions(triangle PRIVATE VORTEX_TRIANGLE_SHADER_DIR="${_shader_out_dir}")
+
+add_executable(sprites sprites/main.cpp)
+target_link_libraries(sprites PRIVATE Vortex::vortex)
