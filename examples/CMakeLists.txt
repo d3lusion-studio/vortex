@@ -34,3 +34,6 @@ target_compile_definitions(triangle PRIVATE VORTEX_TRIANGLE_SHADER_DIR="${_shade
 
 add_executable(sprites sprites/main.cpp)
 target_link_libraries(sprites PRIVATE Vortex::vortex)
+
+add_executable(ecs ecs/main.cpp)
+target_link_libraries(ecs PRIVATE Vortex::vortex)

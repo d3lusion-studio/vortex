@@ -2,6 +2,8 @@
 #include "vortex/core/math/vec4.hpp"
 #include "vortex/core/types.hpp"
 
+#include <cmath>
+
 namespace vortex {
 
 struct Mat4 {
@@ -30,6 +32,16 @@ struct Mat4 {
         r.m[0]  = x;
         r.m[5]  = y;
         r.m[10] = z;
+        return r;
+    }
+
+    // Rotation about the +Z axis (counter-clockwise), the 2D rotation.
+    [[nodiscard]] static Mat4 rotationZ(f32 radians) noexcept {
+        const f32 c = std::cos(radians);
+        const f32 s = std::sin(radians);
+        Mat4 r;
+        r.at(0, 0) = c; r.at(0, 1) = -s;
+        r.at(1, 0) = s; r.at(1, 1) =  c;
         return r;
     }
 

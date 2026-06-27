@@ -9,7 +9,6 @@
 #include "sprite_frag_spv.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 
 namespace vortex::renderer {
@@ -87,18 +86,32 @@ SpriteBatch::~SpriteBatch() {
 
 void SpriteBatch::begin(const Mat4& viewProjection) {
     m_viewProjection = viewProjection;
-    m_sprites.clear();
+    m_items.clear();
     m_drawCalls = 0;
 }
 
 void SpriteBatch::draw(const Sprite& sprite) {
-    m_sprites.push_back(sprite);
+    const Mat4 transform = Mat4::translation(sprite.position.x, sprite.position.y, 0.0f) *
+                           Mat4::rotationZ(sprite.rotation) *
+                           Mat4::scaling(sprite.size.x, sprite.size.y, 1.0f);
+    m_items.push_back({.transform = transform, .color = sprite.color, .uv = sprite.uv,
+                       .texture = sprite.texture, .layer = sprite.layer});
 }
 
 void SpriteBatch::drawSprite(rhi::TextureHandle texture, Vec2 position, Vec2 size,
                              Vec4 color, Rect uv, i32 layer) {
-    m_sprites.push_back({.position = position, .size = size, .rotation = 0.0f,
-                         .color = color, .uv = uv, .texture = texture, .layer = layer});
+    const Mat4 transform = Mat4::translation(position.x, position.y, 0.0f) *
+                           Mat4::scaling(size.x, size.y, 1.0f);
+    m_items.push_back({.transform = transform, .color = color, .uv = uv,
+                       .texture = texture, .layer = layer});
+}
+
+void SpriteBatch::submit(const RenderItem& item) {
+    m_items.push_back(item);
+}
+
+void SpriteBatch::submit(const RenderItem* items, usize count) {
+    m_items.insert(m_items.end(), items, items + count);
 }
 
 rhi::BindGroupHandle SpriteBatch::bindGroupFor(rhi::TextureHandle texture) {
@@ -111,32 +124,30 @@ rhi::BindGroupHandle SpriteBatch::bindGroupFor(rhi::TextureHandle texture) {
 }
 
 void SpriteBatch::end(rhi::ICommandList& cmd) {
-    if (m_sprites.empty()) return;
+    if (m_items.empty()) return;
 
-    std::stable_sort(m_sprites.begin(), m_sprites.end(),
-                     [](const Sprite& a, const Sprite& b) {
+    std::stable_sort(m_items.begin(), m_items.end(),
+                     [](const RenderItem& a, const RenderItem& b) {
                          if (a.layer != b.layer) return a.layer < b.layer;
                          return textureKey(a.texture) < textureKey(b.texture);
                      });
 
-    const u32 spriteCount = std::min(static_cast<u32>(m_sprites.size()), m_maxSprites);
+    const u32 spriteCount = std::min(static_cast<u32>(m_items.size()), m_maxSprites);
+
+    // Unit quad centred at the origin; the item transform places it in the world.
+    static constexpr Vec2 kCorners[4] = {
+        {-0.5f, 0.5f}, {0.5f, 0.5f}, {0.5f, -0.5f}, {-0.5f, -0.5f}};
 
     m_vertices.clear();
     for (u32 i = 0; i < spriteCount; ++i) {
-        const Sprite& s = m_sprites[i];
-        const f32 hx = s.size.x * 0.5f;
-        const f32 hy = s.size.y * 0.5f;
-        const f32 c  = std::cos(s.rotation);
-        const f32 sn = std::sin(s.rotation);
-        auto corner = [&](f32 lx, f32 ly) -> Vec2 {
-            return {s.position.x + lx * c - ly * sn, s.position.y + lx * sn + ly * c};
-        };
-        const f32 uMin = s.uv.x, vMin = s.uv.y;
-        const f32 uMax = s.uv.x + s.uv.width, vMax = s.uv.y + s.uv.height;
-        m_vertices.push_back({corner(-hx,  hy), {uMin, vMin}, s.color});
-        m_vertices.push_back({corner( hx,  hy), {uMax, vMin}, s.color});
-        m_vertices.push_back({corner( hx, -hy), {uMax, vMax}, s.color});
-        m_vertices.push_back({corner(-hx, -hy), {uMin, vMax}, s.color});
+        const RenderItem& it = m_items[i];
+        const f32 uMin = it.uv.x, vMin = it.uv.y;
+        const f32 uMax = it.uv.x + it.uv.width, vMax = it.uv.y + it.uv.height;
+        const Vec2 uvs[4] = {{uMin, vMin}, {uMax, vMin}, {uMax, vMax}, {uMin, vMax}};
+        for (int c = 0; c < 4; ++c) {
+            const Vec4 p = it.transform * Vec4{kCorners[c].x, kCorners[c].y, 0.0f, 1.0f};
+            m_vertices.push_back({{p.x, p.y}, uvs[c], it.color});
+        }
     }
 
     rhi::BufferHandle vbo = m_vertexBuffers[m_frame];
@@ -149,9 +160,9 @@ void SpriteBatch::end(rhi::ICommandList& cmd) {
 
     u32 runStart = 0;
     while (runStart < spriteCount) {
-        const rhi::TextureHandle tex = m_sprites[runStart].texture;
+        const rhi::TextureHandle tex = m_items[runStart].texture;
         u32 runEnd = runStart + 1;
-        while (runEnd < spriteCount && m_sprites[runEnd].texture == tex) ++runEnd;
+        while (runEnd < spriteCount && m_items[runEnd].texture == tex) ++runEnd;
 
         cmd.setBindGroup(0, bindGroupFor(tex));
         cmd.drawIndexed((runEnd - runStart) * 6, 1, runStart * 6, 0, 0);

@@ -2,6 +2,7 @@ add_subdirectory(core)
 add_subdirectory(platform)
 add_subdirectory(rhi)
 add_subdirectory(renderer)
+add_subdirectory(ecs)
 
 add_library(vortex_all INTERFACE)
 add_library(Vortex::vortex ALIAS vortex_all)
@@ -12,6 +13,7 @@ target_link_libraries(vortex_all INTERFACE
     Vortex::platform
     Vortex::rhi
     Vortex::renderer
+    Vortex::ecs
 )
 
 if (VORTEX_INSTALL)
