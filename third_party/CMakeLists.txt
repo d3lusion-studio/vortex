@@ -9,6 +9,26 @@ add_library(vortex_stb INTERFACE)
 target_include_directories(vortex_stb INTERFACE ${stb_SOURCE_DIR})
 add_library(Vortex::stb ALIAS vortex_stb)
 
+FetchContent_Declare(miniaudio
+        GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+        GIT_TAG        0.11.25
+        GIT_SHALLOW    ON)
+FetchContent_MakeAvailable(miniaudio)
+add_library(vortex_miniaudio INTERFACE)
+target_include_directories(vortex_miniaudio INTERFACE ${miniaudio_SOURCE_DIR})
+add_library(Vortex::miniaudio ALIAS vortex_miniaudio)
+
+set(BOX2D_SAMPLES    OFF CACHE BOOL "" FORCE)
+set(BOX2D_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(BOX2D_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(BOX2D_DOCS       OFF CACHE BOOL "" FORCE)
+set(BOX2D_PROFILE    OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(box2d
+        GIT_REPOSITORY https://github.com/erincatto/box2d.git
+        GIT_TAG        v3.1.1
+        GIT_SHALLOW    ON)
+FetchContent_MakeAvailable(box2d)
+
 if (VORTEX_BUILD_TESTS)
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
     set(DOCTEST_NO_INSTALL ON CACHE BOOL "" FORCE)

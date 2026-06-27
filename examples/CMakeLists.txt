@@ -41,3 +41,9 @@ target_link_libraries(ecs PRIVATE Vortex::vortex)
 add_executable(assets assets/main.cpp)
 target_link_libraries(assets PRIVATE Vortex::vortex)
 target_compile_definitions(assets PRIVATE VORTEX_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets")
+
+add_executable(ui ui/main.cpp)
+target_link_libraries(ui PRIVATE Vortex::vortex)
+
+add_executable(physics physics/main.cpp)
+target_link_libraries(physics PRIVATE Vortex::vortex)

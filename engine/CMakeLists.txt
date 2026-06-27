@@ -4,6 +4,10 @@ add_subdirectory(rhi)
 add_subdirectory(renderer)
 add_subdirectory(ecs)
 add_subdirectory(asset)
+add_subdirectory(text)
+add_subdirectory(ui)
+add_subdirectory(audio)
+add_subdirectory(physics)
 
 add_library(vortex_all INTERFACE)
 add_library(Vortex::vortex ALIAS vortex_all)
@@ -16,6 +20,10 @@ target_link_libraries(vortex_all INTERFACE
     Vortex::renderer
     Vortex::ecs
     Vortex::asset
+    Vortex::text
+    Vortex::ui
+    Vortex::audio
+    Vortex::physics
 )
 
 if (VORTEX_INSTALL)

@@ -65,6 +65,18 @@ if (UNIX)
              if [ -n \"\$bad\" ]; then \
                  echo 'BOUNDARY VIOLATION — Vulkan leaked outside rhi/src/vulkan/:'; \
                  echo \"\$bad\"; violations=1; fi; \
+             bad=\$(grep -rnE '#include.*miniaudio' ${CMAKE_SOURCE_DIR}/engine \
+                   --include='*.hpp' --include='*.cpp' \
+                   | grep -v 'audio/src/miniaudio/'); \
+             if [ -n \"\$bad\" ]; then \
+                 echo 'BOUNDARY VIOLATION — miniaudio leaked outside audio/src/miniaudio/:'; \
+                 echo \"\$bad\"; violations=1; fi; \
+             bad=\$(grep -rnE '#include.*box2d' ${CMAKE_SOURCE_DIR}/engine \
+                   --include='*.hpp' --include='*.cpp' \
+                   | grep -v 'physics/src/box2d/'); \
+             if [ -n \"\$bad\" ]; then \
+                 echo 'BOUNDARY VIOLATION — Box2D leaked outside physics/src/box2d/:'; \
+                 echo \"\$bad\"; violations=1; fi; \
              if [ \$violations -eq 0 ]; then \
                  echo 'OK: abstraction boundaries are clean.'; fi; \
              exit \$violations"

@@ -1,0 +1,9 @@
+vortex_add_module(ui
+    SOURCES
+        src/ui.cpp
+    PUBLIC_DEPS
+        Vortex::core
+        Vortex::rhi
+        Vortex::renderer
+        Vortex::text
+)
