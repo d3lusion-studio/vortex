@@ -28,7 +28,8 @@ u64 textureKey(rhi::TextureHandle h) {
 
 }
 
-SpriteBatch::SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, u32 maxSprites)
+SpriteBatch::SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, u32 maxSprites,
+                         rhi::Format depthFormat)
     : m_device(device), m_maxSprites(maxSprites) {
 
     m_sampler = m_device.createSampler({.minFilter = rhi::Filter::Linear,
@@ -51,6 +52,12 @@ SpriteBatch::SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, 
     pd.alphaBlend         = true;
     pd.hasMaterialTexture = true;
     pd.pushConstantSize   = sizeof(Mat4);
+    if (depthFormat != rhi::Format::Undefined) {
+        pd.depthTest    = true;
+        pd.depthWrite   = true;
+        pd.depthCompare = rhi::CompareOp::LessEqual;
+        pd.depthFormat  = depthFormat;
+    }
     pd.debugName          = "sprite_pipeline";
     m_pipeline = m_device.createGraphicsPipeline(pd);
 

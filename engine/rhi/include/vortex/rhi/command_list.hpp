@@ -15,6 +15,8 @@ public:
     virtual void beginRenderPass(const RenderPassDesc&) = 0;
     virtual void endRenderPass() = 0;
 
+    virtual void transition(TextureHandle, ResourceState newState) = 0;
+
     virtual void setPipeline(PipelineHandle) = 0;
     virtual void setBindGroup(u32 slot, BindGroupHandle) = 0;
     virtual void pushConstants(const void* data, u32 size) = 0;

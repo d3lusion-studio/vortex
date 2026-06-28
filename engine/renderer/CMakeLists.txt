@@ -29,6 +29,7 @@ vortex_embed_shader(sprite.frag sprite_frag_spv _frag_header)
 vortex_add_module(renderer
     SOURCES
         src/sprite_batch.cpp
+        src/render_graph.cpp
         ${_vert_header}
         ${_frag_header}
     PUBLIC_DEPS

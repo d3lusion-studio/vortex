@@ -30,7 +30,8 @@ struct Sprite {
 
 class SpriteBatch {
 public:
-    SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, u32 maxSprites = 100000);
+    SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, u32 maxSprites = 100000,
+                rhi::Format depthFormat = rhi::Format::Undefined);
     ~SpriteBatch();
 
     SpriteBatch(const SpriteBatch&)            = delete;

@@ -94,6 +94,33 @@ namespace vortex::rhi::vk {
     return VK_ATTACHMENT_LOAD_OP_CLEAR;
 }
 
+[[nodiscard]] inline VkCompareOp toVkCompareOp(CompareOp op) {
+    switch (op) {
+        case CompareOp::Never:        return VK_COMPARE_OP_NEVER;
+        case CompareOp::Less:         return VK_COMPARE_OP_LESS;
+        case CompareOp::Equal:        return VK_COMPARE_OP_EQUAL;
+        case CompareOp::LessEqual:    return VK_COMPARE_OP_LESS_OR_EQUAL;
+        case CompareOp::Greater:      return VK_COMPARE_OP_GREATER;
+        case CompareOp::NotEqual:     return VK_COMPARE_OP_NOT_EQUAL;
+        case CompareOp::GreaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        case CompareOp::Always:       return VK_COMPARE_OP_ALWAYS;
+    }
+    return VK_COMPARE_OP_LESS_OR_EQUAL;
+}
+
+[[nodiscard]] inline bool isDepthFormat(Format f) { return f == Format::D32_SFLOAT; }
+
+[[nodiscard]] inline VkImageLayout toVkLayout(ResourceState s) {
+    switch (s) {
+        case ResourceState::Undefined:    return VK_IMAGE_LAYOUT_UNDEFINED;
+        case ResourceState::RenderTarget: return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        case ResourceState::DepthTarget:  return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        case ResourceState::ShaderRead:   return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        case ResourceState::Present:      return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    }
+    return VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
 [[nodiscard]] inline VkAttachmentStoreOp toVkStoreOp(StoreOp op) {
     switch (op) {
         case StoreOp::Store:    return VK_ATTACHMENT_STORE_OP_STORE;

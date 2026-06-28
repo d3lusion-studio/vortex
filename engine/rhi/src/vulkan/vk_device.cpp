@@ -303,10 +303,20 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc, const void* p
     tex.format = toVkFormat(desc.format);
     tex.extent = {desc.width, desc.height};
 
-    VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (pixels) usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (hasFlag(desc.usage, TextureUsage::RenderTarget))
-        usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    const bool isDepth = isDepthFormat(desc.format) ||
+                         hasFlag(desc.usage, TextureUsage::DepthStencil);
+    tex.aspect = isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+
+    VkImageUsageFlags usage = 0;
+    if (isDepth) {
+        usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        if (hasFlag(desc.usage, TextureUsage::Sampled)) usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    } else {
+        usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (pixels) usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (hasFlag(desc.usage, TextureUsage::RenderTarget))
+            usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    }
 
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ici.imageType   = VK_IMAGE_TYPE_2D;
@@ -373,7 +383,7 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc, const void* p
     vci.image            = tex.image;
     vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
     vci.format           = tex.format;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vci.subresourceRange = {tex.aspect, 0, 1, 0, 1};
     VK_CHECK(vkCreateImageView(m_device, &vci, nullptr, &tex.view));
 
     return m_textures.create(tex);
@@ -526,13 +536,18 @@ PipelineHandle VulkanDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     cb.attachmentCount = 1;
     cb.pAttachments    = &cba;
 
+    VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    dss.depthTestEnable  = desc.depthTest  ? VK_TRUE : VK_FALSE;
+    dss.depthWriteEnable = desc.depthWrite ? VK_TRUE : VK_FALSE;
+    dss.depthCompareOp   = toVkCompareOp(desc.depthCompare);
+
     VkDynamicState dynStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     ds.dynamicStateCount = 2;
     ds.pDynamicStates    = dynStates;
 
     VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushRange.offset     = 0;
     pushRange.size       = desc.pushConstantSize;
 
@@ -552,6 +567,8 @@ PipelineHandle VulkanDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     VkPipelineRenderingCreateInfo rci{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rci.colorAttachmentCount    = 1;
     rci.pColorAttachmentFormats = &colorFormat;
+    if (desc.depthFormat != Format::Undefined)
+        rci.depthAttachmentFormat = toVkFormat(desc.depthFormat);
 
     VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pci.pNext               = &rci;
@@ -563,6 +580,7 @@ PipelineHandle VulkanDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     pci.pRasterizationState = &rs;
     pci.pMultisampleState   = &ms;
     pci.pColorBlendState    = &cb;
+    pci.pDepthStencilState  = &dss;
     pci.pDynamicState       = &ds;
     pci.layout              = layout;
     pci.renderPass          = VK_NULL_HANDLE;

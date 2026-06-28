@@ -71,6 +71,26 @@ add_dependencies(mt_record mt_shaders)
 target_link_libraries(mt_record PRIVATE Vortex::vortex)
 target_compile_definitions(mt_record PRIVATE VORTEX_MT_SHADER_DIR="${_mt_shader_out}")
 
+set(_rg_shader_out ${CMAKE_CURRENT_BINARY_DIR}/rendergraph_shaders)
+file(MAKE_DIRECTORY ${_rg_shader_out})
+set(_rg_spv "")
+foreach (_sh post.vert post.frag)
+    add_custom_command(
+        OUTPUT ${_rg_shader_out}/${_sh}.spv
+        COMMAND ${VORTEX_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/rendergraph/shaders/${_sh}
+                -o ${_rg_shader_out}/${_sh}.spv
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/rendergraph/shaders/${_sh}
+        COMMENT "Compiling shader ${_sh}"
+        VERBATIM)
+    list(APPEND _rg_spv ${_rg_shader_out}/${_sh}.spv)
+endforeach ()
+add_custom_target(rendergraph_shaders DEPENDS ${_rg_spv})
+
+add_executable(rendergraph rendergraph/main.cpp)
+add_dependencies(rendergraph rendergraph_shaders)
+target_link_libraries(rendergraph PRIVATE Vortex::vortex)
+target_compile_definitions(rendergraph PRIVATE VORTEX_RG_SHADER_DIR="${_rg_shader_out}")
+
 add_executable(debug_draw debug/main.cpp)
 target_link_libraries(debug_draw PRIVATE Vortex::vortex)
 

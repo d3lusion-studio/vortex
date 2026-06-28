@@ -21,6 +21,8 @@ public:
     void beginRenderPass(const RenderPassDesc&) override;
     void endRenderPass() override;
 
+    void transition(TextureHandle, ResourceState newState) override;
+
     void setPipeline(PipelineHandle) override;
     void setBindGroup(u32 slot, BindGroupHandle) override;
     void pushConstants(const void* data, u32 size) override;

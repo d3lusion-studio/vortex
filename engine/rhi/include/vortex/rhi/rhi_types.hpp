@@ -62,6 +62,10 @@ struct GraphicsPipelineDesc {
     bool                   alphaBlend  = false;  // straight-alpha blending for sprites
     bool                   hasMaterialTexture = false;  // set 0, binding 0: combined image sampler
     u32                    pushConstantSize   = 0;       // vertex-stage push constant block bytes
+    bool                   depthTest    = false;
+    bool                   depthWrite   = false;
+    CompareOp              depthCompare = CompareOp::LessEqual;
+    Format                 depthFormat  = Format::Undefined;
     const char*            debugName   = nullptr;
 };
 
@@ -78,8 +82,16 @@ struct ColorAttachment {
     f32           clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 };
 
+struct DepthAttachment {
+    TextureHandle target;
+    LoadOp        loadOp     = LoadOp::Clear;
+    StoreOp       storeOp    = StoreOp::DontCare;
+    f32           clearDepth = 1.0f;
+};
+
 struct RenderPassDesc {
     ColorAttachment color;
+    DepthAttachment depth;
     u32             width  = 0;
     u32             height = 0;
     bool            secondaryContents = false;

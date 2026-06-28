@@ -53,6 +53,7 @@ enum class CullMode { None, Front, Back };
 enum class TextureUsage : u32 {
     Sampled      = 1u << 0,
     RenderTarget = 1u << 1,
+    DepthStencil = 1u << 2,
 };
 
 [[nodiscard]] constexpr TextureUsage operator|(TextureUsage a, TextureUsage b) noexcept {
@@ -64,6 +65,18 @@ enum class TextureUsage : u32 {
 
 enum class Filter      { Nearest, Linear };
 enum class AddressMode { Repeat, ClampToEdge, MirroredRepeat };
+
+enum class CompareOp {
+    Never, Less, Equal, LessEqual, Greater, NotEqual, GreaterEqual, Always
+};
+
+enum class ResourceState {
+    Undefined,
+    RenderTarget,
+    DepthTarget,
+    ShaderRead,
+    Present,
+};
 
 inline constexpr u32 kMaxFramesInFlight = 2;
 

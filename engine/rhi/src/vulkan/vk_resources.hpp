@@ -19,13 +19,14 @@ struct VulkanPipeline {
 };
 
 struct VulkanTexture {
-    VkImage       image            = VK_NULL_HANDLE;
-    VkImageView   view             = VK_NULL_HANDLE;
-    VmaAllocation allocation       = VK_NULL_HANDLE;  // null for swapchain-owned images
-    VkFormat      format           = VK_FORMAT_UNDEFINED;
-    VkExtent2D    extent           = {0, 0};
-    VkImageLayout currentLayout    = VK_IMAGE_LAYOUT_UNDEFINED;
-    bool          isSwapchainImage = false;
+    VkImage            image         = VK_NULL_HANDLE;
+    VkImageView        view          = VK_NULL_HANDLE;
+    VmaAllocation      allocation    = VK_NULL_HANDLE;
+    VkFormat           format        = VK_FORMAT_UNDEFINED;
+    VkExtent2D         extent        = {0, 0};
+    VkImageLayout      currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageAspectFlags aspect        = VK_IMAGE_ASPECT_COLOR_BIT;
+    bool          isSwapchainImage   = false;
 };
 
 struct VulkanSampler {

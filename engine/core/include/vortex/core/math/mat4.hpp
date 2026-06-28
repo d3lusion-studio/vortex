@@ -1,4 +1,5 @@
 #pragma once
+#include "vortex/core/math/vec3.hpp"
 #include "vortex/core/math/vec4.hpp"
 #include "vortex/core/types.hpp"
 
@@ -55,6 +56,49 @@ struct Mat4 {
         r.at(1, 3) = (top + bottom) / (top - bottom);
         r.at(2, 3) = -nearZ / (farZ - nearZ);
         r.at(3, 3) = 1.0f;
+        return r;
+    }
+
+    [[nodiscard]] static Mat4 rotationX(f32 radians) noexcept {
+        const f32 c = std::cos(radians), s = std::sin(radians);
+        Mat4 r;
+        r.at(1, 1) = c; r.at(1, 2) = -s;
+        r.at(2, 1) = s; r.at(2, 2) =  c;
+        return r;
+    }
+
+    [[nodiscard]] static Mat4 rotationY(f32 radians) noexcept {
+        const f32 c = std::cos(radians), s = std::sin(radians);
+        Mat4 r;
+        r.at(0, 0) =  c; r.at(0, 2) = s;
+        r.at(2, 0) = -s; r.at(2, 2) = c;
+        return r;
+    }
+
+    [[nodiscard]] static Mat4 perspective(f32 fovYRadians, f32 aspect,
+                                          f32 nearZ, f32 farZ) noexcept {
+        const f32 t = std::tan(fovYRadians * 0.5f);
+        Mat4 r;
+        r.at(0, 0) = 1.0f / (aspect * t);
+        r.at(1, 1) = -1.0f / t;
+        r.at(2, 2) = farZ / (nearZ - farZ);
+        r.at(2, 3) = -(farZ * nearZ) / (farZ - nearZ);
+        r.at(3, 2) = -1.0f;
+        r.at(3, 3) = 0.0f;
+        return r;
+    }
+
+    [[nodiscard]] static Mat4 lookAt(Vec3 eye, Vec3 center, Vec3 up) noexcept {
+        const Vec3 f = normalize(center - eye);
+        const Vec3 s = normalize(cross(f, up));
+        const Vec3 u = cross(s, f);
+        Mat4 r;
+        r.at(0, 0) = s.x; r.at(0, 1) = s.y; r.at(0, 2) = s.z;
+        r.at(1, 0) = u.x; r.at(1, 1) = u.y; r.at(1, 2) = u.z;
+        r.at(2, 0) = -f.x; r.at(2, 1) = -f.y; r.at(2, 2) = -f.z;
+        r.at(0, 3) = -dot(s, eye);
+        r.at(1, 3) = -dot(u, eye);
+        r.at(2, 3) =  dot(f, eye);
         return r;
     }
 

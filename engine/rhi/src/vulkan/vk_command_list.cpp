@@ -5,32 +5,45 @@ namespace vortex::rhi::vk {
 
 namespace {
 
-void transitionImage(VkCommandBuffer cmd, VkImage image,
+struct StageAccess { VkPipelineStageFlags stage; VkAccessFlags access; };
+
+StageAccess stageAccessFor(VkImageLayout layout) {
+    switch (layout) {
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            return {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT};
+        case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+            return {VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT};
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            return {VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT};
+        case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+            return {VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0};
+        case VK_IMAGE_LAYOUT_UNDEFINED:
+        default:
+            return {VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0};
+    }
+}
+
+void transitionImage(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect,
                      VkImageLayout oldLayout, VkImageLayout newLayout) {
+    if (oldLayout == newLayout) return;
+    const StageAccess src = stageAccessFor(oldLayout);
+    const StageAccess dst = stageAccessFor(newLayout);
+
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     barrier.oldLayout           = oldLayout;
     barrier.newLayout           = newLayout;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image               = image;
-    barrier.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barrier.subresourceRange    = {aspect, 0, 1, 0, 1};
+    barrier.srcAccessMask       = src.access;
+    barrier.dstAccessMask       = dst.access;
 
-    VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-
-    if (newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        dstStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    } else if (newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
-        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        barrier.dstAccessMask = 0;
-        srcStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-    }
-
-    vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(cmd, src.stage, dst.stage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
 }
@@ -39,8 +52,8 @@ void VulkanCommandList::beginRenderPass(const RenderPassDesc& desc) {
     VulkanTexture* tex = m_device->getTexture(desc.color.target);
     if (!tex) return;
 
-    transitionImage(m_cmd, tex->image, VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    transitionImage(m_cmd, tex->image, VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     tex->currentLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -56,9 +69,33 @@ void VulkanCommandList::beginRenderPass(const RenderPassDesc& desc) {
     ri.layerCount           = 1;
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments    = &color;
+
+    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    VulkanTexture* depthTex = m_device->getTexture(desc.depth.target);
+    if (depthTex) {
+        transitionImage(m_cmd, depthTex->image, VK_IMAGE_ASPECT_DEPTH_BIT,
+                        depthTex->currentLayout, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+        depthTex->currentLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+        depth.imageView   = depthTex->view;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depth.loadOp      = toVkLoadOp(desc.depth.loadOp);
+        depth.storeOp     = toVkStoreOp(desc.depth.storeOp);
+        depth.clearValue.depthStencil = {desc.depth.clearDepth, 0};
+        ri.pDepthAttachment = &depth;
+    }
+
     if (desc.secondaryContents)
         ri.flags |= VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;
     vkCmdBeginRendering(m_cmd, &ri);
+}
+
+void VulkanCommandList::transition(TextureHandle h, ResourceState newState) {
+    VulkanTexture* tex = m_device->getTexture(h);
+    if (!tex) return;
+    const VkImageLayout newLayout = toVkLayout(newState);
+    transitionImage(m_cmd, tex->image, tex->aspect, tex->currentLayout, newLayout);
+    tex->currentLayout = newLayout;
 }
 
 void VulkanCommandList::endRenderPass() {
@@ -81,7 +118,8 @@ void VulkanCommandList::setBindGroup(u32 slot, BindGroupHandle h) {
 
 void VulkanCommandList::pushConstants(const void* data, u32 size) {
     if (m_currentLayout == VK_NULL_HANDLE) return;
-    vkCmdPushConstants(m_cmd, m_currentLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, size, data);
+    vkCmdPushConstants(m_cmd, m_currentLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, size, data);
 }
 
 void VulkanCommandList::setViewport(const Viewport& vp) {
@@ -127,8 +165,8 @@ void VulkanCommandList::drawIndexed(u32 indexCount, u32 instanceCount, u32 first
 void VulkanCommandList::transitionToPresent(TextureHandle h) {
     VulkanTexture* tex = m_device->getTexture(h);
     if (!tex) return;
-    transitionImage(m_cmd, tex->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    transitionImage(m_cmd, tex->image, VK_IMAGE_ASPECT_COLOR_BIT,
+                    tex->currentLayout, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     tex->currentLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 }
 
