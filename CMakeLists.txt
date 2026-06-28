@@ -20,6 +20,7 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(VortexModule)
 
 option(VORTEX_BUILD_EXAMPLES "Build Vortex example" ${PROJECT_IS_TOP_LEVEL})
+option(VORTEX_BUILD_TOOLS "Build Vortex tools (asset cooker, ...)" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_BUILD_TESTS "Build Vortex test" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_INSTALL "Generate install/export rules" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
@@ -33,6 +34,10 @@ add_subdirectory(engine)
 
 if(VORTEX_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(VORTEX_BUILD_TOOLS)
+    add_subdirectory(tools)
 endif()
 
 #if(VORTEX_BUILD_TESTS)

@@ -2,6 +2,7 @@ vortex_add_module(asset
     SOURCES
         src/asset_manager.cpp
         src/image.cpp
+        src/cooked_texture.cpp
     PUBLIC_DEPS
         Vortex::core
         Vortex::rhi

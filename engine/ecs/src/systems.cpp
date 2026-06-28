@@ -48,6 +48,7 @@ void extractSprites(Registry& registry, std::vector<renderer::RenderItem>& out) 
     out.clear();
     registry.view<WorldTransform2D, SpriteComp>(
         [&](Entity, WorldTransform2D& world, SpriteComp& sprite) {
+            if (!sprite.texture.valid()) return;
             out.push_back({
                 .transform = world.matrix * Mat4::scaling(sprite.size.x, sprite.size.y, 1.0f),
                 .color     = sprite.color,
@@ -64,6 +65,7 @@ void extractSpritesParallel(Registry& registry, jobs::JobSystem& jobs,
     std::vector<Pair> pairs;
     registry.view<WorldTransform2D, SpriteComp>(
         [&](Entity, WorldTransform2D& world, SpriteComp& sprite) {
+            if (!sprite.texture.valid()) return;   // nothing to bind/draw
             pairs.push_back({&world, &sprite});
         });
 

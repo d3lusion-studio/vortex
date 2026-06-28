@@ -172,6 +172,15 @@ public:
         }
     }
 
+    template <class Fn>
+    void each(Fn&& fn) const {
+        std::vector<bool> isFree(m_generations.size(), false);
+        for (u32 i : m_free)
+            if (i < isFree.size()) isFree[i] = true;
+        for (u32 i = 0; i < m_generations.size(); ++i)
+            if (!isFree[i]) fn(Entity{i, m_generations[i]});
+    }
+
     [[nodiscard]] usize aliveCount() const { return m_aliveCount; }
     [[nodiscard]] usize capacity() const { return m_generations.size(); }
 

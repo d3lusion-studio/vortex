@@ -9,6 +9,7 @@ add_subdirectory(text)
 add_subdirectory(ui)
 add_subdirectory(audio)
 add_subdirectory(physics)
+add_subdirectory(debug)
 
 add_library(vortex_all INTERFACE)
 add_library(Vortex::vortex ALIAS vortex_all)
@@ -26,6 +27,7 @@ target_link_libraries(vortex_all INTERFACE
     Vortex::ui
     Vortex::audio
     Vortex::physics
+    Vortex::debug
 )
 
 if (VORTEX_INSTALL)

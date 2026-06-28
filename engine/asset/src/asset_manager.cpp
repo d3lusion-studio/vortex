@@ -1,5 +1,6 @@
 #include "vortex/asset/asset_manager.hpp"
 
+#include "vortex/asset/cooked_texture.hpp"
 #include "vortex/asset/image.hpp"
 #include "vortex/core/log.hpp"
 #include "vortex/platform/filesystem.hpp"
@@ -7,7 +8,9 @@
 #include "vortex/rhi/rhi_enums.hpp"
 #include "vortex/rhi/rhi_types.hpp"
 
+#include <cctype>
 #include <filesystem>
+#include <string>
 #include <system_error>
 
 namespace vortex::assets {
@@ -18,6 +21,12 @@ i64 fileMTime(const char* path) {
     const auto t = std::filesystem::last_write_time(path, ec);
     if (ec) return 0;
     return static_cast<i64>(t.time_since_epoch().count());
+}
+
+bool isCookedTexture(const char* path) {
+    std::string ext = std::filesystem::path(path).extension().string();
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".vtex";
 }
 
 }
@@ -39,7 +48,9 @@ bool AssetManager::importTexture(const char* path, TextureAsset& outAsset, i64& 
         return false;
     }
 
-    const Image image = decodeImage(bytes.data(), bytes.size());
+    const Image image = isCookedTexture(path)
+                            ? decodeCookedTexture(bytes.data(), bytes.size())
+                            : decodeImage(bytes.data(), bytes.size());
     if (!image.valid()) {
         VORTEX_ERROR("Asset", "Failed to decode '%s'", path);
         return false;

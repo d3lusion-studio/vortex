@@ -70,3 +70,18 @@ add_executable(mt_record mt_record/main.cpp)
 add_dependencies(mt_record mt_shaders)
 target_link_libraries(mt_record PRIVATE Vortex::vortex)
 target_compile_definitions(mt_record PRIVATE VORTEX_MT_SHADER_DIR="${_mt_shader_out}")
+
+add_executable(debug_draw debug/main.cpp)
+target_link_libraries(debug_draw PRIVATE Vortex::vortex)
+
+add_executable(inspector inspector/main.cpp)
+target_link_libraries(inspector PRIVATE Vortex::vortex)
+
+add_library(game MODULE hotreload/game.cpp)
+set_target_properties(game PROPERTIES PREFIX "lib")
+
+add_executable(hotreload hotreload/host.cpp)
+target_link_libraries(hotreload PRIVATE Vortex::vortex)
+target_compile_definitions(hotreload PRIVATE
+    VORTEX_GAME_LIB="$<TARGET_FILE:game>")
+add_dependencies(hotreload game)

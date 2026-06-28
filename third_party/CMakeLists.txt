@@ -9,6 +9,20 @@ add_library(vortex_stb INTERFACE)
 target_include_directories(vortex_stb INTERFACE ${stb_SOURCE_DIR})
 add_library(Vortex::stb ALIAS vortex_stb)
 
+FetchContent_Declare(imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        v1.91.8-docking
+        GIT_SHALLOW    ON)
+FetchContent_MakeAvailable(imgui)
+add_library(vortex_imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/imgui_demo.cpp)
+target_include_directories(vortex_imgui PUBLIC ${imgui_SOURCE_DIR})
+add_library(Vortex::imgui ALIAS vortex_imgui)
+
 FetchContent_Declare(miniaudio
         GIT_REPOSITORY https://github.com/mackron/miniaudio.git
         GIT_TAG        0.11.25

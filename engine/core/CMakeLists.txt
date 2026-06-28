@@ -6,6 +6,7 @@ configure_file(
 vortex_add_module(core
         SOURCES
         src/log.cpp
+        src/console.cpp
         src/profiler.cpp
         src/frame_allocator.cpp)
 

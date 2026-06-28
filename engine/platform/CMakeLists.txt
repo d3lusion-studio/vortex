@@ -6,10 +6,12 @@ vortex_add_module(platform
         src/glfw/glfw_input.cpp
         src/native/native_clock.cpp
         src/native/native_filesystem.cpp
+        src/native/native_dynamic_library.cpp
     PUBLIC_DEPS
         Vortex::core
     PRIVATE_DEPS
         glfw
+        ${CMAKE_DL_LIBS}
 )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
