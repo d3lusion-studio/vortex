@@ -26,8 +26,15 @@ option(VORTEX_INSTALL "Generate install/export rules" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 option(VORTEX_WITH_TRACY "Enable the Tracy profiler backend" OFF)
 
-set(VORTEX_RHI_BACKEND "Vulkan" CACHE STRING "Graphics Backend")
-set_property(CACHE VORTEX_RHI_BACKEND PROPERTY STRINGS Vulkan DX12 Metal WebGPU)
+set(VORTEX_RHI_BACKEND "Vulkan" CACHE STRING "Default graphics backend (used by examples when VORTEX_RHI_API is unset)")
+set_property(CACHE VORTEX_RHI_BACKEND PROPERTY STRINGS Vulkan WebGPU)
+
+option(VORTEX_RHI_WITH_VULKAN "Build the Vulkan RHI backend" ON)
+option(VORTEX_RHI_WITH_WEBGPU "Build the WebGPU (wgpu-native) RHI backend" ON)
+
+if (NOT VORTEX_RHI_WITH_VULKAN AND NOT VORTEX_RHI_WITH_WEBGPU)
+    message(FATAL_ERROR "At least one RHI backend must be enabled")
+endif ()
 
 add_subdirectory(third_party)
 add_subdirectory(engine)

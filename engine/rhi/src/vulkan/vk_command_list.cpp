@@ -1,6 +1,8 @@
 #include "vk_command_list.hpp"
 #include "vk_device.hpp"
 
+#include "vortex/core/log.hpp"
+
 namespace vortex::rhi::vk {
 
 namespace {
@@ -160,6 +162,13 @@ void VulkanCommandList::draw(u32 vertexCount, u32 instanceCount, u32 firstVertex
 void VulkanCommandList::drawIndexed(u32 indexCount, u32 instanceCount, u32 firstIndex,
                                     i32 vertexOffset, u32 firstInstance) {
     vkCmdDrawIndexed(m_cmd, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+}
+
+void VulkanCommandList::dispatch(u32, u32, u32) {
+    // Stub: compute pipelines are not wired yet, so there is nothing bound to
+    // dispatch against. Warn once rather than issue invalid GPU work.
+    static bool warned = false;
+    if (!warned) { VORTEX_WARN("RHI", "dispatch() is not implemented (compute stub)"); warned = true; }
 }
 
 void VulkanCommandList::transitionToPresent(TextureHandle h) {

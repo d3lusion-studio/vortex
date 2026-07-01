@@ -38,6 +38,9 @@ target_link_libraries(sprites PRIVATE Vortex::vortex)
 add_executable(ecs ecs/main.cpp)
 target_link_libraries(ecs PRIVATE Vortex::vortex)
 
+add_executable(mesh3d mesh3d/main.cpp)
+target_link_libraries(mesh3d PRIVATE Vortex::vortex)
+
 add_executable(assets assets/main.cpp)
 target_link_libraries(assets PRIVATE Vortex::vortex)
 target_compile_definitions(assets PRIVATE VORTEX_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets")

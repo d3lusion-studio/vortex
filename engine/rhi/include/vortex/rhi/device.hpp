@@ -53,4 +53,7 @@ public:
 
 [[nodiscard]] std::unique_ptr<IGraphicsDevice> createDevice(GraphicsAPI api, pf::IWindow& window);
 
+[[nodiscard]] GraphicsAPI defaultGraphicsAPI();
+[[nodiscard]] std::unique_ptr<IGraphicsDevice> createDevice(pf::IWindow& window);
+
 }

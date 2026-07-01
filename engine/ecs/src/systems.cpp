@@ -83,4 +83,16 @@ void extractSpritesParallel(Registry& registry, jobs::JobSystem& jobs,
     });
 }
 
+void extractMeshes(Registry& registry, std::vector<renderer::MeshInstance>& out) {
+    out.clear();
+    registry.view<Transform3D, MeshComp>(
+        [&](Entity, Transform3D& t, MeshComp& mesh) {
+            if (!mesh.mesh.valid()) return;
+            const Mat4 model = Mat4::translation(t.position.x, t.position.y, t.position.z) *
+                               t.rotation.toMat4() *
+                               Mat4::scaling(t.scale.x, t.scale.y, t.scale.z);
+            out.push_back({.mesh = mesh.mesh, .model = model, .color = mesh.color});
+        });
+}
+
 }

@@ -36,6 +36,8 @@ public:
     void drawIndexed(u32 indexCount, u32 instanceCount, u32 firstIndex,
                      i32 vertexOffset, u32 firstInstance) override;
 
+    void dispatch(u32 groupCountX, u32 groupCountY, u32 groupCountZ) override;
+
     void transitionToPresent(TextureHandle);
 
 private:

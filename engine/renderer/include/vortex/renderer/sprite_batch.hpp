@@ -54,6 +54,7 @@ private:
         Vec2 pos;
         Vec2 uv;
         Vec4 color;
+        u32  texIndex = 0;
     };
 
     rhi::BindGroupHandle bindGroupFor(rhi::TextureHandle);

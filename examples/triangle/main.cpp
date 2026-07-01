@@ -33,7 +33,7 @@ int main() {
     auto input  = pf::createInputProvider(*window);
     auto fs     = pf::createFileSystem();
 
-    auto device = rhi::createDevice(rhi::GraphicsAPI::Vulkan, *window);
+    auto device = rhi::createDevice(*window);
 
     int fbWidth = 0, fbHeight = 0;
     window->getFramebufferSize(fbWidth, fbHeight);

@@ -53,8 +53,19 @@ namespace vortex::rhi::vk {
         case VertexFormat::Float3:   return VK_FORMAT_R32G32B32_SFLOAT;
         case VertexFormat::Float4:   return VK_FORMAT_R32G32B32A32_SFLOAT;
         case VertexFormat::UNorm4x8: return VK_FORMAT_R8G8B8A8_UNORM;
+        case VertexFormat::UInt1:    return VK_FORMAT_R32_UINT;
     }
     return VK_FORMAT_UNDEFINED;
+}
+
+[[nodiscard]] inline VkSampleCountFlagBits toVkSampleCount(u32 samples) {
+    switch (samples) {
+        case 2:  return VK_SAMPLE_COUNT_2_BIT;
+        case 4:  return VK_SAMPLE_COUNT_4_BIT;
+        case 8:  return VK_SAMPLE_COUNT_8_BIT;
+        case 16: return VK_SAMPLE_COUNT_16_BIT;
+        default: return VK_SAMPLE_COUNT_1_BIT;
+    }
 }
 
 [[nodiscard]] inline VkPresentModeKHR toVkPresentMode(PresentMode m) {

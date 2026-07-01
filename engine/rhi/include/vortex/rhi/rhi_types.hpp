@@ -31,8 +31,11 @@ struct SamplerDesc {
 };
 
 struct BindGroupDesc {
-    TextureHandle texture;
-    SamplerHandle sampler;
+    TextureHandle texture{};
+    SamplerHandle sampler{};
+
+    BufferHandle  uniformBuffer{};
+    u64           uniformSize = 0;
 };
 
 struct SwapchainDesc {
@@ -60,12 +63,15 @@ struct GraphicsPipelineDesc {
     CullMode               cull        = CullMode::None;
     Format                 colorFormat = Format::B8G8R8A8_UNORM;
     bool                   alphaBlend  = false;  // straight-alpha blending for sprites
-    bool                   hasMaterialTexture = false;  // set 0, binding 0: combined image sampler
+    bool                   hasMaterialTexture = false;  // a set: sampled image + sampler
+    bool                   hasUniformBuffer   = false;  // a set: single uniform buffer (vtx+frag)
     u32                    pushConstantSize   = 0;       // vertex-stage push constant block bytes
     bool                   depthTest    = false;
     bool                   depthWrite   = false;
     CompareOp              depthCompare = CompareOp::LessEqual;
     Format                 depthFormat  = Format::Undefined;
+    u32                    sampleCount  = 1;  // MSAA samples; 1 = no multisampling.
+                                              // Targets/resolve attachments are future work.
     const char*            debugName   = nullptr;
 };
 

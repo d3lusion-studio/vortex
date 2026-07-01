@@ -1,10 +1,13 @@
 #pragma once
 #include "vortex/core/math/mat4.hpp"
+#include "vortex/core/math/quat.hpp"
 #include "vortex/core/math/rect.hpp"
 #include "vortex/core/math/vec2.hpp"
+#include "vortex/core/math/vec3.hpp"
 #include "vortex/core/math/vec4.hpp"
 #include "vortex/core/types.hpp"
 #include "vortex/ecs/entity.hpp"
+#include "vortex/renderer/mesh.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
 
 namespace vortex::ecs {
@@ -34,6 +37,17 @@ struct SpriteComp {
 
 struct Velocity {
     Vec2 value{0.0f, 0.0f};
+};
+
+struct Transform3D {
+    Vec3 position{0.0f, 0.0f, 0.0f};
+    Quat rotation{};
+    Vec3 scale{1.0f, 1.0f, 1.0f};
+};
+
+struct MeshComp {
+    renderer::MeshHandle mesh;
+    Vec4                 color{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
 }

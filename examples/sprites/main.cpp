@@ -65,7 +65,7 @@ int main() {
                                     .title = "Vortex Sprites"});
     auto input  = pf::createInputProvider(*window);
     auto clock  = pf::createClock();
-    auto device = rhi::createDevice(rhi::GraphicsAPI::Vulkan, *window);
+    auto device = rhi::createDevice(*window);
 
     int fbw = 0, fbh = 0;
     window->getFramebufferSize(fbw, fbh);

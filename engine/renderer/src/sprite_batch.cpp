@@ -45,6 +45,7 @@ SpriteBatch::SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, 
         {.location = 0, .format = rhi::VertexFormat::Float2, .offset = offsetof(Vertex, pos)},
         {.location = 1, .format = rhi::VertexFormat::Float2, .offset = offsetof(Vertex, uv)},
         {.location = 2, .format = rhi::VertexFormat::Float4, .offset = offsetof(Vertex, color)},
+        {.location = 3, .format = rhi::VertexFormat::UInt1,  .offset = offsetof(Vertex, texIndex)},
     };
     pd.topology           = rhi::PrimitiveTopology::TriangleList;
     pd.cull               = rhi::CullMode::None;

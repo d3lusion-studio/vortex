@@ -107,22 +107,41 @@ VulkanDevice::VulkanDevice(pf::IWindow& window) {
     VkFenceCreateInfo uploadFenceCI{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     VK_CHECK(vkCreateFence(m_device, &uploadFenceCI, nullptr, &m_uploadFence));
 
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding         = 0;
-    binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding         = 0;
+    bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding         = 1;
+    bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo setLayoutCI{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    setLayoutCI.bindingCount = 1;
-    setLayoutCI.pBindings    = &binding;
+    setLayoutCI.bindingCount = 2;
+    setLayoutCI.pBindings    = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &setLayoutCI, nullptr, &m_materialSetLayout));
 
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024};
+    // Uniform set: one uniform buffer at binding 0, readable from both stages.
+    VkDescriptorSetLayoutBinding uboBinding{};
+    uboBinding.binding         = 0;
+    uboBinding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboBinding.descriptorCount = 1;
+    uboBinding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo uboLayoutCI{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    uboLayoutCI.bindingCount = 1;
+    uboLayoutCI.pBindings    = &uboBinding;
+    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &uboLayoutCI, nullptr, &m_uniformSetLayout));
+
+    VkDescriptorPoolSize poolSizes[3]{
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
+        {VK_DESCRIPTOR_TYPE_SAMPLER,       1024},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 256},
+    };
     VkDescriptorPoolCreateInfo poolCI{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolCI.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolCI.maxSets       = 1024;
-    poolCI.poolSizeCount = 1;
-    poolCI.pPoolSizes    = &poolSize;
+    poolCI.maxSets       = 1280;
+    poolCI.poolSizeCount = 3;
+    poolCI.pPoolSizes    = poolSizes;
     VK_CHECK(vkCreateDescriptorPool(m_device, &poolCI, nullptr, &m_descriptorPool));
 
     {
@@ -179,6 +198,7 @@ VulkanDevice::~VulkanDevice() {
 
     vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(m_device, m_materialSetLayout, nullptr);
+    vkDestroyDescriptorSetLayout(m_device, m_uniformSetLayout, nullptr);
 
     if (m_timestampPool) vkDestroyQueryPool(m_device, m_timestampPool, nullptr);
 
@@ -431,6 +451,34 @@ void VulkanDevice::destroySampler(SamplerHandle h) {
 }
 
 BindGroupHandle VulkanDevice::createBindGroup(const BindGroupDesc& desc) {
+    // Uniform-buffer bind group: single UBO at binding 0.
+    if (desc.uniformBuffer.valid()) {
+        VulkanBuffer* buf = m_buffers.get(desc.uniformBuffer);
+        VORTEX_ASSERT(buf, "createBindGroup with invalid uniform buffer handle");
+        if (!buf) return {};
+
+        VkDescriptorSetAllocateInfo uai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        uai.descriptorPool     = m_descriptorPool;
+        uai.descriptorSetCount = 1;
+        uai.pSetLayouts        = &m_uniformSetLayout;
+        VulkanBindGroup group{};
+        VK_CHECK(vkAllocateDescriptorSets(m_device, &uai, &group.set));
+
+        VkDescriptorBufferInfo bufInfo{};
+        bufInfo.buffer = buf->buffer;
+        bufInfo.offset = 0;
+        bufInfo.range  = desc.uniformSize > 0 ? desc.uniformSize : buf->size;
+
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet          = group.set;
+        write.dstBinding      = 0;
+        write.descriptorCount = 1;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.pBufferInfo     = &bufInfo;
+        vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
+        return m_bindGroups.create(group);
+    }
+
     VulkanTexture* tex = m_textures.get(desc.texture);
     VulkanSampler* smp = m_samplers.get(desc.sampler);
     VORTEX_ASSERT(tex && smp, "createBindGroup with invalid texture or sampler handle");
@@ -444,17 +492,25 @@ BindGroupHandle VulkanDevice::createBindGroup(const BindGroupDesc& desc) {
     VK_CHECK(vkAllocateDescriptorSets(m_device, &ai, &group.set));
 
     VkDescriptorImageInfo imageInfo{};
-    imageInfo.sampler     = smp->sampler;
     imageInfo.imageView   = tex->view;
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo samplerInfo{};
+    samplerInfo.sampler   = smp->sampler;
 
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet          = group.set;
-    write.dstBinding      = 0;
-    write.descriptorCount = 1;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo      = &imageInfo;
-    vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = group.set;
+    writes[0].dstBinding      = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[0].pImageInfo      = &imageInfo;
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = group.set;
+    writes[1].dstBinding      = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER;
+    writes[1].pImageInfo      = &samplerInfo;
+    vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
 
     return m_bindGroups.create(group);
 }
@@ -519,7 +575,7 @@ PipelineHandle VulkanDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     rs.lineWidth   = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    ms.rasterizationSamples = toVkSampleCount(desc.sampleCount);
 
     VkPipelineColorBlendAttachmentState cba{};
     cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -551,10 +607,17 @@ PipelineHandle VulkanDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     pushRange.offset     = 0;
     pushRange.size       = desc.pushConstantSize;
 
+    // Set layouts, in binding order: material set (if any) then uniform set (if
+    // any). A pipeline with only one uses set 0.
+    VkDescriptorSetLayout setLayouts[2];
+    u32 setLayoutCount = 0;
+    if (desc.hasMaterialTexture) setLayouts[setLayoutCount++] = m_materialSetLayout;
+    if (desc.hasUniformBuffer)   setLayouts[setLayoutCount++] = m_uniformSetLayout;
+
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    if (desc.hasMaterialTexture) {
-        lci.setLayoutCount = 1;
-        lci.pSetLayouts    = &m_materialSetLayout;
+    if (setLayoutCount > 0) {
+        lci.setLayoutCount = setLayoutCount;
+        lci.pSetLayouts    = setLayouts;
     }
     if (desc.pushConstantSize > 0) {
         lci.pushConstantRangeCount = 1;
@@ -792,9 +855,7 @@ void VulkanDevice::executeSecondary(ICommandList& primary, ICommandList* const* 
 
 namespace vortex::rhi {
 
-std::unique_ptr<IGraphicsDevice> createDevice(GraphicsAPI api, pf::IWindow& window) {
-    VORTEX_ASSERT(api == GraphicsAPI::Vulkan, "Only the Vulkan backend is implemented");
-    (void)api;
+std::unique_ptr<IGraphicsDevice> createVulkanDevice(pf::IWindow& window) {
     return std::make_unique<vk::VulkanDevice>(window);
 }
 

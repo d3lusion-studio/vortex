@@ -65,6 +65,12 @@ if (UNIX)
              if [ -n \"\$bad\" ]; then \
                  echo 'BOUNDARY VIOLATION — Vulkan leaked outside rhi/src/vulkan/:'; \
                  echo \"\$bad\"; violations=1; fi; \
+             bad=\$(grep -rnE '#include.*(webgpu|wgpu)\\.h' ${CMAKE_SOURCE_DIR}/engine \
+                   --include='*.hpp' --include='*.cpp' \
+                   | grep -v 'rhi/src/webgpu/'); \
+             if [ -n \"\$bad\" ]; then \
+                 echo 'BOUNDARY VIOLATION — WebGPU leaked outside rhi/src/webgpu/:'; \
+                 echo \"\$bad\"; violations=1; fi; \
              bad=\$(grep -rnE '#include.*miniaudio' ${CMAKE_SOURCE_DIR}/engine \
                    --include='*.hpp' --include='*.cpp' \
                    | grep -v 'audio/src/miniaudio/'); \

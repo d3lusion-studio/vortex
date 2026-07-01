@@ -65,7 +65,7 @@ if (VORTEX_BUILD_TESTS)
     unset(CMAKE_POLICY_VERSION_MINIMUM)
 endif ()
 
-if (VORTEX_RHI_BACKEND STREQUAL "Vulkan")
+if (VORTEX_RHI_WITH_VULKAN)
     find_library(VORTEX_VULKAN_LOADER NAMES vulkan vulkan-1 REQUIRED)
 
     FetchContent_Declare(VulkanHeaders
@@ -93,4 +93,25 @@ if (VORTEX_RHI_BACKEND STREQUAL "Vulkan")
             GPUOpen::VulkanMemoryAllocator
             vk-bootstrap::vk-bootstrap
             ${VORTEX_VULKAN_LOADER})
+endif ()
+
+if (VORTEX_RHI_WITH_WEBGPU)
+    if (NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+             CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64"))
+        message(FATAL_ERROR
+            "VORTEX_RHI_WITH_WEBGPU is only wired for linux-x86_64 prebuilt wgpu-native. "
+            "Add the matching archive URL/hash for ${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}.")
+    endif ()
+
+    FetchContent_Declare(wgpu_native
+            URL      https://github.com/gfx-rs/wgpu-native/releases/download/v0.19.4.1/wgpu-linux-x86_64-release.zip
+            URL_HASH SHA256=7d73bd7af2be60b632e5ab814996acb381d1b459975d6629f91c468049c8866a)
+    FetchContent_MakeAvailable(wgpu_native)
+
+    add_library(vortex_webgpu_deps INTERFACE)
+    target_include_directories(vortex_webgpu_deps INTERFACE ${wgpu_native_SOURCE_DIR})
+    target_link_libraries(vortex_webgpu_deps INTERFACE
+            ${wgpu_native_SOURCE_DIR}/libwgpu_native.so)
+    target_link_options(vortex_webgpu_deps INTERFACE
+            "-Wl,-rpath,${wgpu_native_SOURCE_DIR}")
 endif ()

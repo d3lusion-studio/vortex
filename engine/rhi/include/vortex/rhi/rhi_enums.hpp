@@ -3,7 +3,7 @@
 
 namespace vortex::rhi {
 
-enum class GraphicsAPI { Vulkan };
+enum class GraphicsAPI { Vulkan, WebGPU };
 
 enum class Format {
     Undefined,
@@ -46,7 +46,7 @@ enum class PrimitiveTopology { TriangleList, TriangleStrip, LineList, PointList 
 
 enum class IndexType { U16, U32 };
 
-enum class VertexFormat { Float1, Float2, Float3, Float4, UNorm4x8 };
+enum class VertexFormat { Float1, Float2, Float3, Float4, UNorm4x8, UInt1 };
 
 enum class CullMode { None, Front, Back };
 
