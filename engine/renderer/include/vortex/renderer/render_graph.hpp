@@ -46,8 +46,10 @@ public:
     // Declare (or reuse) a transient colour target. Recreated on size/format change.
     [[nodiscard]] ResourceId colorTarget(const char* name, u32 width, u32 height,
                                          rhi::Format format);
-    // Declare (or reuse) a transient depth target (D32_SFLOAT).
-    [[nodiscard]] ResourceId depthTarget(const char* name, u32 width, u32 height);
+    // Declare (or reuse) a transient depth target (D32_SFLOAT). Pass sampled=true
+    // for depth that a later pass reads as a texture (e.g. a shadow map).
+    [[nodiscard]] ResourceId depthTarget(const char* name, u32 width, u32 height,
+                                         bool sampled = false);
 
     // Records what a pass reads/writes. Issued inside addPass's setup callback.
     class PassBuilder {
@@ -80,6 +82,7 @@ private:
     struct PoolEntry {
         std::string         name;
         bool                isDepth = false;
+        bool                sampled = false;   // created with Sampled usage
         rhi::Format         format  = rhi::Format::Undefined;
         u32                 width = 0, height = 0;
         rhi::TextureHandle   tex[rhi::kMaxFramesInFlight]{};
@@ -97,12 +100,13 @@ private:
     // Find or (re)create the persistent pool entry for a transient target,
     // returning its index in m_pool.
     usize acquirePool(const char* name, u32 width, u32 height,
-                      rhi::Format format, bool isDepth);
+                      rhi::Format format, bool isDepth, bool sampled);
     ResourceId addTransient(usize poolIndex, u32 width, u32 height);
     void destroyPoolEntry(PoolEntry&);
 
     rhi::IGraphicsDevice& m_device;
-    rhi::SamplerHandle    m_sampler;
+    rhi::SamplerHandle    m_sampler;       // linear/clamp for colour targets
+    rhi::SamplerHandle    m_depthSampler;  // nearest/clamp for sampling depth (shadow maps)
     u32                   m_frame = 0;
 
     std::vector<PoolEntry> m_pool;        // persistent across frames

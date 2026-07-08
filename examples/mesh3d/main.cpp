@@ -7,6 +7,7 @@
 #include "vortex/platform/window.hpp"
 #include "vortex/renderer/camera.hpp"
 #include "vortex/renderer/mesh.hpp"
+#include "vortex/renderer/post_process.hpp"
 #include "vortex/renderer/render_graph.hpp"
 #include "vortex/renderer/sprite_batch.hpp"
 #include "vortex/rhi/command_list.hpp"
@@ -30,12 +31,17 @@ int main() {
     auto swapchain = device->createSwapchain(
         {.width = static_cast<u32>(fbw), .height = static_cast<u32>(fbh)}, *window);
 
-    const rhi::Format colorFormat = swapchain->format();
+    const rhi::Format swapFormat  = swapchain->format();
     const rhi::Format depthFormat = rhi::Format::D32_SFLOAT;
+    // The scene is rendered into a float HDR target; post then tone-maps it to
+    // the swapchain. Mesh and overlay pipelines therefore target the HDR format.
+    const rhi::Format hdrFormat   = rhi::Format::R32G32B32A32_SFLOAT;
+    constexpr u32     kShadowRes  = 2048;
 
-    renderer::MeshRenderer mesh(*device, colorFormat, depthFormat);
+    renderer::MeshRenderer mesh(*device, hdrFormat, depthFormat);
     // Overlay sprites: no depth, so they always sit on top of the 3D scene.
-    renderer::SpriteBatch  batch(*device, colorFormat, 256);
+    renderer::SpriteBatch  batch(*device, hdrFormat, 256);
+    renderer::PostProcess  post(*device, hdrFormat, swapFormat);
     renderer::RenderGraph  graph(*device);
 
     const renderer::MeshHandle cubeMesh  = mesh.createMesh(renderer::makeCube(1.0f));
@@ -51,12 +57,15 @@ int main() {
     const ecs::Entity ground = reg.create();
     reg.emplace<ecs::Transform3D>(ground, ecs::Transform3D{.position = {0.0f, -1.0f, 0.0f}});
     reg.emplace<ecs::MeshComp>(ground, ecs::MeshComp{.mesh = planeMesh,
-                                                     .color = {0.30f, 0.32f, 0.36f, 1.0f}});
+                                                     .color = {0.30f, 0.32f, 0.36f, 1.0f},
+                                                     .metallic = 0.0f, .roughness = 0.9f});
 
+    // A polished gold sphere: metallic with low roughness shows off PBR + bloom.
     const ecs::Entity centre = reg.create();
     reg.emplace<ecs::Transform3D>(centre, ecs::Transform3D{});
     reg.emplace<ecs::MeshComp>(centre, ecs::MeshComp{.mesh = ballMesh,
-                                                     .color = {0.85f, 0.78f, 0.35f, 1.0f}});
+                                                     .color = {1.0f, 0.78f, 0.34f, 1.0f},
+                                                     .metallic = 1.0f, .roughness = 0.18f});
 
     constexpr int kCubeCount = 8;
     std::vector<ecs::Entity> cubes;
@@ -67,7 +76,8 @@ int main() {
         reg.emplace<ecs::Transform3D>(e, ecs::Transform3D{
             .position = {std::cos(a) * 3.2f, 0.0f, std::sin(a) * 3.2f}});
         reg.emplace<ecs::MeshComp>(e, ecs::MeshComp{
-            .mesh = cubeMesh, .color = {0.3f + 0.6f * t, 0.5f, 1.0f - 0.5f * t, 1.0f}});
+            .mesh = cubeMesh, .color = {0.3f + 0.6f * t, 0.5f, 1.0f - 0.5f * t, 1.0f},
+            .metallic = t, .roughness = 0.2f + 0.7f * (1.0f - t)});
         cubes.push_back(e);
     }
 
@@ -116,7 +126,10 @@ int main() {
 
         renderer::DirectionalLight light;
         light.direction = {std::cos(t * 0.7f), -0.8f, std::sin(t * 0.7f)};
-        light.intensity = 1.1f;
+        light.intensity = 3.0f;                 // HDR: bright enough for specular to bloom
+        light.shadowTarget = {0.0f, 0.0f, 0.0f};
+        light.shadowExtent = 8.0f;              // covers the sphere + cube ring
+        light.shadowDistance = 30.0f;
 
         // Spin the ring cubes and the centre sphere via their ECS transforms.
         for (int i = 0; i < kCubeCount; ++i)
@@ -143,33 +156,53 @@ int main() {
 
         graph.beginFrame();
         const auto backbuffer = graph.importBackbuffer(frame.backbuffer, frame.width, frame.height);
+        const auto sceneHdr   = graph.colorTarget("scene_hdr", frame.width, frame.height, hdrFormat);
         const auto sceneDepth = graph.depthTarget("scene_depth", frame.width, frame.height);
+        const auto shadowMap  = graph.depthTarget("shadow_map", kShadowRes, kShadowRes,
+                                                  /*sampled=*/true);
 
-        const f32 clear[4] = {0.04f, 0.05f, 0.08f, 1.0f};
+        const f32 clear[4] = {0.02f, 0.03f, 0.05f, 1.0f};
         const rhi::Viewport vp{.x = 0.0f, .y = 0.0f,
                                .width = static_cast<f32>(frame.width),
                                .height = static_cast<f32>(frame.height)};
 
+        // 1) Shadow pass: depth-only, from the light's point of view.
+        graph.addPass("shadow",
+            [&](renderer::RenderGraph::PassBuilder& b) { b.writeDepth(shadowMap); },
+            [&](rhi::ICommandList& cmd) {
+                cmd.setViewport({.x = 0.0f, .y = 0.0f,
+                                 .width = static_cast<f32>(kShadowRes),
+                                 .height = static_cast<f32>(kShadowRes)});
+                cmd.setScissor(0, 0, kShadowRes, kShadowRes);
+                mesh.renderShadow(cmd);
+            });
+
+        // 2) Lit scene into the HDR target, sampling the shadow map.
         graph.addPass("mesh",
             [&](renderer::RenderGraph::PassBuilder& b) {
-                b.writeColor(backbuffer, clear);
+                b.sample(shadowMap);
+                b.writeColor(sceneHdr, clear);
                 b.writeDepth(sceneDepth);
             },
             [&](rhi::ICommandList& cmd) {
                 cmd.setViewport(vp);
                 cmd.setScissor(0, 0, frame.width, frame.height);
-                mesh.end(cmd);
+                mesh.end(cmd, graph.sampledBindGroup(shadowMap));
             });
 
+        // 3) 2D overlay on top of the scene (still HDR).
         graph.addPass("overlay",
             [&](renderer::RenderGraph::PassBuilder& b) {
-                b.writeColor(backbuffer, clear, rhi::LoadOp::Load);
+                b.writeColor(sceneHdr, clear, rhi::LoadOp::Load);
             },
             [&](rhi::ICommandList& cmd) {
                 cmd.setViewport(vp);
                 cmd.setScissor(0, 0, frame.width, frame.height);
                 batch.end(cmd);
             });
+
+        // 4) Bloom + ACES tone map, resolving HDR into the backbuffer.
+        post.addPasses(graph, sceneHdr, backbuffer, frame.width, frame.height);
 
         graph.execute(*frame.cmd);
         device->endFrame();

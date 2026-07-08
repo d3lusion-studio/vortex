@@ -121,6 +121,21 @@ namespace vortex::rhi::vk {
 
 [[nodiscard]] inline bool isDepthFormat(Format f) { return f == Format::D32_SFLOAT; }
 
+[[nodiscard]] inline u32 bytesPerPixel(Format f) {
+    switch (f) {
+        case Format::R8G8B8A8_UNORM:
+        case Format::B8G8R8A8_UNORM:
+        case Format::R8G8B8A8_SRGB:
+        case Format::B8G8R8A8_SRGB:
+        case Format::D32_SFLOAT:          return 4;
+        case Format::R32G32_SFLOAT:       return 8;
+        case Format::R32G32B32_SFLOAT:    return 12;
+        case Format::R32G32B32A32_SFLOAT: return 16;
+        case Format::Undefined:           return 0;
+    }
+    return 0;
+}
+
 [[nodiscard]] inline VkImageLayout toVkLayout(ResourceState s) {
     switch (s) {
         case ResourceState::Undefined:    return VK_IMAGE_LAYOUT_UNDEFINED;

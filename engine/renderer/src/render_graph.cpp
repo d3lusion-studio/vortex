@@ -11,13 +11,21 @@ RenderGraph::RenderGraph(rhi::IGraphicsDevice& device) : m_device(device) {
                                         .magFilter = rhi::Filter::Linear,
                                         .addressU  = rhi::AddressMode::ClampToEdge,
                                         .addressV  = rhi::AddressMode::ClampToEdge});
+    // Depth targets (shadow maps) are sampled with point filtering; PCF is done
+    // in the shader with explicit taps rather than hardware linear filtering,
+    // which a plain sampler cannot do on a depth format portably.
+    m_depthSampler = m_device.createSampler({.minFilter = rhi::Filter::Nearest,
+                                             .magFilter = rhi::Filter::Nearest,
+                                             .addressU  = rhi::AddressMode::ClampToEdge,
+                                             .addressV  = rhi::AddressMode::ClampToEdge});
     m_frame = rhi::kMaxFramesInFlight - 1;
 }
 
 RenderGraph::~RenderGraph() {
     m_device.waitIdle();
     for (PoolEntry& e : m_pool) destroyPoolEntry(e);
-    if (m_sampler.valid()) m_device.destroySampler(m_sampler);
+    if (m_sampler.valid())      m_device.destroySampler(m_sampler);
+    if (m_depthSampler.valid()) m_device.destroySampler(m_depthSampler);
 }
 
 void RenderGraph::destroyPoolEntry(PoolEntry& e) {
@@ -34,7 +42,7 @@ void RenderGraph::beginFrame() {
 }
 
 usize RenderGraph::acquirePool(const char* name, u32 width, u32 height,
-                               rhi::Format format, bool isDepth) {
+                               rhi::Format format, bool isDepth, bool sampled) {
     usize index = m_pool.size();
     for (usize i = 0; i < m_pool.size(); ++i)
         if (m_pool[i].name == name) { index = i; break; }
@@ -47,18 +55,22 @@ usize RenderGraph::acquirePool(const char* name, u32 width, u32 height,
     PoolEntry& e = m_pool[index];
     const bool stale = e.width != width || e.height != height ||
                        e.format != format || e.isDepth != isDepth ||
-                       !e.tex[0].valid();
+                       e.sampled != sampled || !e.tex[0].valid();
     if (stale) {
         m_device.waitIdle();        // a target may still be in flight on resize
         destroyPoolEntry(e);
-        e.width = width; e.height = height; e.format = format; e.isDepth = isDepth;
+        e.width = width; e.height = height; e.format = format;
+        e.isDepth = isDepth; e.sampled = sampled;
 
         rhi::TextureDesc desc{};
         desc.width  = width;
         desc.height = height;
         desc.format = format;
-        desc.usage  = isDepth ? rhi::TextureUsage::DepthStencil
-                              : (rhi::TextureUsage::Sampled | rhi::TextureUsage::RenderTarget);
+        if (isDepth)
+            desc.usage = sampled ? (rhi::TextureUsage::DepthStencil | rhi::TextureUsage::Sampled)
+                                 : rhi::TextureUsage::DepthStencil;
+        else
+            desc.usage = rhi::TextureUsage::Sampled | rhi::TextureUsage::RenderTarget;
         desc.debugName = e.name.c_str();
         for (u32 i = 0; i < rhi::kMaxFramesInFlight; ++i)
             e.tex[i] = m_device.createTexture(desc, nullptr);
@@ -89,12 +101,14 @@ RenderGraph::ResourceId RenderGraph::importBackbuffer(rhi::TextureHandle h, u32 
 
 RenderGraph::ResourceId RenderGraph::colorTarget(const char* name, u32 width, u32 height,
                                                  rhi::Format format) {
-    const usize idx = acquirePool(name, width, height, format, /*isDepth=*/false);
+    const usize idx = acquirePool(name, width, height, format, /*isDepth=*/false, /*sampled=*/true);
     return addTransient(idx, width, height);
 }
 
-RenderGraph::ResourceId RenderGraph::depthTarget(const char* name, u32 width, u32 height) {
-    const usize idx = acquirePool(name, width, height, rhi::Format::D32_SFLOAT, /*isDepth=*/true);
+RenderGraph::ResourceId RenderGraph::depthTarget(const char* name, u32 width, u32 height,
+                                                 bool sampled) {
+    const usize idx = acquirePool(name, width, height, rhi::Format::D32_SFLOAT,
+                                  /*isDepth=*/true, sampled);
     return addTransient(idx, width, height);
 }
 
@@ -110,8 +124,10 @@ rhi::BindGroupHandle RenderGraph::sampledBindGroup(ResourceId id) {
     const Resource& r = m_resources[id];
     if (r.poolIndex < 0) return {};   // imported targets aren't sampled by the graph
     PoolEntry& e = m_pool[static_cast<usize>(r.poolIndex)];
-    if (!e.bind[m_frame].valid())
-        e.bind[m_frame] = m_device.createBindGroup({.texture = e.tex[m_frame], .sampler = m_sampler});
+    if (!e.bind[m_frame].valid()) {
+        const rhi::SamplerHandle smp = e.isDepth ? m_depthSampler : m_sampler;
+        e.bind[m_frame] = m_device.createBindGroup({.texture = e.tex[m_frame], .sampler = smp});
+    }
     return e.bind[m_frame];
 }
 
@@ -152,20 +168,27 @@ void RenderGraph::execute(rhi::ICommandList& cmd) {
             }
         }
 
-        if (pass.colorWrite == kInvalid || pass.colorWrite >= m_resources.size()) continue;
-        const Resource& cw = m_resources[pass.colorWrite];
+        const bool hasColor = pass.colorWrite != kInvalid && pass.colorWrite < m_resources.size();
+        const bool hasDepth = pass.depthWrite != kInvalid && pass.depthWrite < m_resources.size();
+        if (!hasColor && !hasDepth) continue;   // nothing to render into
 
         rhi::RenderPassDesc pd{};
-        pd.color.target = texture(pass.colorWrite);
-        pd.color.loadOp = pass.colorLoadOp;
-        for (int i = 0; i < 4; ++i) pd.color.clearColor[i] = pass.clearColor[i];
-        pd.width  = cw.width;
-        pd.height = cw.height;
+        if (hasColor) {
+            const Resource& cw = m_resources[pass.colorWrite];
+            pd.color.target = texture(pass.colorWrite);
+            pd.color.loadOp = pass.colorLoadOp;
+            for (int i = 0; i < 4; ++i) pd.color.clearColor[i] = pass.clearColor[i];
+            pd.width  = cw.width;
+            pd.height = cw.height;
+        }
 
-        if (pass.depthWrite != kInvalid && pass.depthWrite < m_resources.size()) {
+        if (hasDepth) {
+            const Resource& dw = m_resources[pass.depthWrite];
             pd.depth.target     = texture(pass.depthWrite);
             pd.depth.loadOp     = pass.depthLoadOp;
             pd.depth.clearDepth = pass.clearDepth;
+            pd.depth.storeOp    = rhi::StoreOp::Store;   // shadow maps are sampled later
+            if (!hasColor) { pd.width = dw.width; pd.height = dw.height; }
         }
 
         cmd.beginRenderPass(pd);
@@ -173,9 +196,8 @@ void RenderGraph::execute(rhi::ICommandList& cmd) {
         cmd.endRenderPass();
 
         // Record the post-pass states so a later sample triggers a barrier.
-        m_resources[pass.colorWrite].state = rhi::ResourceState::RenderTarget;
-        if (pass.depthWrite != kInvalid && pass.depthWrite < m_resources.size())
-            m_resources[pass.depthWrite].state = rhi::ResourceState::DepthTarget;
+        if (hasColor) m_resources[pass.colorWrite].state = rhi::ResourceState::RenderTarget;
+        if (hasDepth) m_resources[pass.depthWrite].state = rhi::ResourceState::DepthTarget;
     }
 }
 

@@ -24,12 +24,19 @@ struct MeshVertex {
     Vec2 uv;
 };
 
-// A single directional light, the minimal lighting model for Phase 11.
+// A single directional light. Also drives the shadow map: the scene is rendered
+// depth-only from an orthographic camera aimed along `direction`.
 struct DirectionalLight {
     Vec3 direction{-0.4f, -1.0f, -0.5f};   // direction the light travels (world)
     Vec3 color{1.0f, 1.0f, 1.0f};
     f32  intensity = 1.0f;
-    Vec3 ambient{0.08f, 0.09f, 0.11f};
+    Vec3 ambient{1.0f, 1.0f, 1.0f};        // IBL intensity/tint (ambient from cubemaps)
+
+    // Shadow frustum: an ortho box of half-extent `shadowExtent` centred on
+    // `shadowTarget`, with the light placed `shadowDistance` back along -dir.
+    Vec3 shadowTarget{0.0f, 0.0f, 0.0f};
+    f32  shadowExtent   = 16.0f;
+    f32  shadowDistance = 40.0f;
 };
 
 using MeshHandle = Handle<struct MeshTag>;
@@ -38,6 +45,8 @@ struct MeshInstance {
     MeshHandle mesh;
     Mat4       model = Mat4::identity();
     Vec4       color{1.0f, 1.0f, 1.0f, 1.0f};
+    f32        metallic  = 0.0f;
+    f32        roughness = 0.5f;
 };
 
 // Raw CPU mesh data produced by the primitive generators below.
@@ -69,7 +78,15 @@ public:
     void drawMesh(MeshHandle, const Mat4& model, Vec4 color = {1.0f, 1.0f, 1.0f, 1.0f});
     void submit(const MeshInstance&);
     void submit(const MeshInstance* items, usize count);
-    void end(rhi::ICommandList& cmd);
+
+    // Depth-only pass from the light's point of view; fills the shadow map.
+    void renderShadow(rhi::ICommandList& cmd);
+    // Main lit pass. `shadowMap` is the sampling bind group for the depth target
+    // written by renderShadow(); pass an invalid handle to render unshadowed.
+    void end(rhi::ICommandList& cmd, rhi::BindGroupHandle shadowMap = {});
+
+    // World -> light clip space, valid after begin(); use it to size the shadow pass.
+    [[nodiscard]] const Mat4& lightViewProj() const { return m_frameData.lightViewProj; }
 
     [[nodiscard]] u32 drawCallCount() const { return m_drawCalls; }
 
@@ -83,6 +100,7 @@ private:
 
     struct FrameUBO {
         Mat4 viewProj;
+        Mat4 lightViewProj;
         Vec4 lightDir;
         Vec4 lightColor;
         Vec4 ambient;
@@ -92,12 +110,22 @@ private:
     struct Push {
         Mat4 model;
         Vec4 color;
+        Vec4 material;   // x: metallic, y: roughness
     };
 
     rhi::IGraphicsDevice& m_device;
     rhi::PipelineHandle   m_pipeline;
+    rhi::PipelineHandle   m_shadowPipeline;
     rhi::BufferHandle     m_uniformBuffers[rhi::kMaxFramesInFlight];
     rhi::BindGroupHandle  m_uniformBindGroups[rhi::kMaxFramesInFlight];
+
+    // Image-based lighting: a procedural environment + its diffuse irradiance,
+    // built once on the CPU and uploaded as cubemaps.
+    rhi::TextureHandle    m_envMap;
+    rhi::TextureHandle    m_irradiance;
+    rhi::SamplerHandle    m_iblSampler;
+    rhi::BindGroupHandle  m_iblBindGroup;
+
     u32                   m_frame = 0;
 
     std::vector<GpuMesh>      m_meshes;

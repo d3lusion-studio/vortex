@@ -48,6 +48,8 @@ struct Transform3D {
 struct MeshComp {
     renderer::MeshHandle mesh;
     Vec4                 color{1.0f, 1.0f, 1.0f, 1.0f};
+    f32                  metallic  = 0.0f;
+    f32                  roughness = 0.5f;
 };
 
 }

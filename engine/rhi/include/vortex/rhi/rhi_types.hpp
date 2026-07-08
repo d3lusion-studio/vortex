@@ -20,6 +20,7 @@ struct TextureDesc {
     u32          height = 0;
     Format       format = Format::R8G8B8A8_UNORM;
     TextureUsage usage  = TextureUsage::Sampled;
+    bool         cube   = false;   // create a cubemap (6 faces, sampled as samplerCube)
     const char*  debugName = nullptr;
 };
 
@@ -36,6 +37,13 @@ struct BindGroupDesc {
 
     BufferHandle  uniformBuffer{};
     u64           uniformSize = 0;
+
+    // Image-based-lighting set: two cubemaps (irradiance + prefiltered env)
+    // sharing one sampler. Selected when isIblSet is true.
+    bool          isIblSet = false;
+    TextureHandle irradiance{};
+    TextureHandle envMap{};
+    SamplerHandle iblSampler{};
 };
 
 struct SwapchainDesc {
@@ -61,10 +69,12 @@ struct GraphicsPipelineDesc {
     VertexLayout           vertexLayout;
     PrimitiveTopology      topology    = PrimitiveTopology::TriangleList;
     CullMode               cull        = CullMode::None;
-    Format                 colorFormat = Format::B8G8R8A8_UNORM;
+    Format                 colorFormat = Format::B8G8R8A8_UNORM;  // Undefined => depth-only pass
     bool                   alphaBlend  = false;  // straight-alpha blending for sprites
+    bool                   additiveBlend = false;  // src + dst; used for bloom composite/particles
     bool                   hasMaterialTexture = false;  // a set: sampled image + sampler
     bool                   hasUniformBuffer   = false;  // a set: single uniform buffer (vtx+frag)
+    bool                   hasIblTextures     = false;  // a set: irradiance + env cubemaps
     u32                    pushConstantSize   = 0;       // vertex-stage push constant block bytes
     bool                   depthTest    = false;
     bool                   depthWrite   = false;

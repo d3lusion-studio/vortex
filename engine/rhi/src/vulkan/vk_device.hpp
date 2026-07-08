@@ -83,6 +83,7 @@ private:
     VkDescriptorPool         m_descriptorPool   = VK_NULL_HANDLE;
     VkDescriptorSetLayout    m_materialSetLayout = VK_NULL_HANDLE;  // set 0: combined image sampler
     VkDescriptorSetLayout    m_uniformSetLayout  = VK_NULL_HANDLE;  // a set: single uniform buffer
+    VkDescriptorSetLayout    m_iblSetLayout      = VK_NULL_HANDLE;  // a set: 2 cubemaps + sampler
 
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue  = VK_NULL_HANDLE;
