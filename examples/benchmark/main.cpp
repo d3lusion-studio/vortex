@@ -149,7 +149,7 @@ int main() {
         { VORTEX_PROFILE_ZONE("transform"); ecs::updateTransforms(scene.registry()); }
 
         // Serial extraction — timed for comparison only.
-        { VORTEX_PROFILE_ZONE("extract.serial"); ecs::extractSprites(scene.registry(), serialItems); }
+        { VORTEX_PROFILE_ZONE("extract.serial"); serialItems.clear(); ecs::extractSprites(scene.registry(), serialItems); }
 
         // Parallel extraction into the frame allocator — this is what we render.
         renderer::RenderItem* items = nullptr;

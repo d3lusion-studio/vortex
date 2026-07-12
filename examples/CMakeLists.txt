@@ -38,6 +38,11 @@ target_link_libraries(sprites PRIVATE Vortex::vortex)
 add_executable(ecs ecs/main.cpp)
 target_link_libraries(ecs PRIVATE Vortex::vortex)
 
+# Target name is not "game": examples/hotreload already claims that for its
+# hot-swappable module library.
+add_executable(game_example game/main.cpp)
+target_link_libraries(game_example PRIVATE Vortex::vortex)
+
 add_executable(mesh3d mesh3d/main.cpp)
 target_link_libraries(mesh3d PRIVATE Vortex::vortex)
 
@@ -50,6 +55,12 @@ target_link_libraries(ui PRIVATE Vortex::vortex)
 
 add_executable(physics physics/main.cpp)
 target_link_libraries(physics PRIVATE Vortex::vortex)
+
+add_executable(particles particles/main.cpp)
+target_link_libraries(particles PRIVATE Vortex::vortex)
+
+add_executable(tilemap tilemap/main.cpp)
+target_link_libraries(tilemap PRIVATE Vortex::vortex)
 
 add_executable(benchmark benchmark/main.cpp)
 target_link_libraries(benchmark PRIVATE Vortex::vortex)

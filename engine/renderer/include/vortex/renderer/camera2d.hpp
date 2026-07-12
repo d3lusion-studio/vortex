@@ -1,5 +1,6 @@
 #pragma once
 #include "vortex/core/math/mat4.hpp"
+#include "vortex/core/math/rect.hpp"
 #include "vortex/core/math/vec2.hpp"
 #include "vortex/core/types.hpp"
 
@@ -30,6 +31,20 @@ struct Camera2D {
         const f32 wx = (sx - viewportWidth  * 0.5f) / zoom + position.x;
         const f32 wy = -(sy - viewportHeight * 0.5f) / zoom + position.y;
         return {wx, wy};
+    }
+
+    [[nodiscard]] Vec2 worldToScreen(Vec2 world) const {
+        return {(world.x - position.x) * zoom + viewportWidth  * 0.5f,
+                -(world.y - position.y) * zoom + viewportHeight * 0.5f};
+    }
+
+    // World-space AABB of everything the camera can see. Feed this to sprite
+    // culling; `padding` grows it, which keeps sprites whose pivot has left the
+    // frame but whose body has not from popping out.
+    [[nodiscard]] Rect visibleBounds(f32 padding = 0.0f) const {
+        const f32 halfW = viewportWidth  * 0.5f / zoom;
+        const f32 halfH = viewportHeight * 0.5f / zoom;
+        return Rect::fromCenter(position, {halfW * 2.0f, halfH * 2.0f}).expanded(padding);
     }
 };
 

@@ -39,6 +39,9 @@ vortex_embed_shader(fxaa.frag       fxaa_frag_spv       _fxaa_header)
 vortex_add_module(renderer
     SOURCES
         src/sprite_batch.cpp
+        src/sprite_animation.cpp
+        src/particles.cpp
+        src/tilemap.cpp
         src/render_graph.cpp
         src/mesh.cpp
         src/post_process.cpp
@@ -57,6 +60,7 @@ vortex_add_module(renderer
     PUBLIC_DEPS
         Vortex::core
         Vortex::rhi
+        Vortex::jobs
 )
 
 target_include_directories(vortex_renderer PRIVATE ${_gen_dir})

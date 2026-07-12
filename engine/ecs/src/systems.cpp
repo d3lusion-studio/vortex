@@ -1,8 +1,10 @@
 #include "vortex/ecs/systems.hpp"
 
+#include "vortex/core/math/scalar.hpp"
 #include "vortex/ecs/components.hpp"
 #include "vortex/ecs/registry.hpp"
 #include "vortex/jobs/job_system.hpp"
+#include "vortex/renderer/culling.hpp"
 
 #include <functional>
 
@@ -14,6 +16,22 @@ Mat4 localMatrix(const Transform2D& t) {
     return Mat4::translation(t.position.x, t.position.y, 0.0f) *
            Mat4::rotationZ(t.rotation) *
            Mat4::scaling(t.scale.x, t.scale.y, 1.0f);
+}
+
+// A sprite is drawn only if it has a texture, and only if it survives culling.
+bool spriteDrawn(const WorldTransform2D& world, const SpriteComp& sprite, const Rect* bounds) {
+    if (!sprite.texture.valid()) return false;
+    return bounds == nullptr || renderer::quadVisible(world.matrix, sprite.size, *bounds);
+}
+
+renderer::RenderItem makeItem(const WorldTransform2D& world, const SpriteComp& sprite) {
+    return {
+        .transform = world.matrix * Mat4::scaling(sprite.size.x, sprite.size.y, 1.0f),
+        .color     = sprite.color,
+        .uv        = sprite.uv,
+        .texture   = sprite.texture,
+        .layer     = sprite.layer,
+    };
 }
 
 } // namespace
@@ -44,47 +62,67 @@ void updateTransforms(Registry& registry) {
         [&](Entity e, Transform2D&, WorldTransform2D&) { resolve(e); });
 }
 
-void extractSprites(Registry& registry, std::vector<renderer::RenderItem>& out) {
-    out.clear();
+void updateSpriteAnimations(Registry& registry, const renderer::AnimationLibrary& library, f32 dt) {
+    registry.view<SpriteAnimator, SpriteComp>(
+        [&](Entity, SpriteAnimator& anim, SpriteComp& sprite) {
+            const renderer::AnimationClip* clip = library.get(anim.clip);
+            if (clip == nullptr || clip->frames.empty() || clip->fps <= 0.0f) return;
+
+            const f32 duration = clip->duration();
+            if (anim.playing && !anim.finished) anim.time += dt * anim.speed;
+
+            if (clip->loop) {
+                anim.time = wrap(anim.time, 0.0f, duration);
+            } else if (anim.time >= duration) {
+                anim.time     = duration;
+                anim.finished = true;
+            } else if (anim.time < 0.0f) {
+                anim.time     = 0.0f;
+                anim.finished = true;
+            }
+
+            const auto last  = static_cast<u32>(clip->frames.size() - 1);
+            const auto index = static_cast<u32>(anim.time * clip->fps);
+            anim.frame = index < last ? index : last;
+
+            sprite.uv = clip->frames[anim.frame];
+            if (clip->texture.valid()) sprite.texture = clip->texture;
+        });
+}
+
+void extractSprites(Registry& registry, std::vector<renderer::RenderItem>& out,
+                    const Rect* visibleBounds) {
     registry.view<WorldTransform2D, SpriteComp>(
         [&](Entity, WorldTransform2D& world, SpriteComp& sprite) {
-            if (!sprite.texture.valid()) return;
-            out.push_back({
-                .transform = world.matrix * Mat4::scaling(sprite.size.x, sprite.size.y, 1.0f),
-                .color     = sprite.color,
-                .uv        = sprite.uv,
-                .texture   = sprite.texture,
-                .layer     = sprite.layer,
-            });
+            if (!spriteDrawn(world, sprite, visibleBounds)) return;
+            out.push_back(makeItem(world, sprite));
         });
 }
 
 void extractSpritesParallel(Registry& registry, jobs::JobSystem& jobs,
-                            std::vector<renderer::RenderItem>& out) {
+                            std::vector<renderer::RenderItem>& out,
+                            const Rect* visibleBounds) {
+    // Cull on the gather walk, so the parallel pass only pays the matrix multiply
+    // for sprites that actually reach the batcher. Gathering (rather than writing
+    // straight into `out`) also keeps the result order-stable, which matters
+    // because equal sort keys would otherwise shuffle between frames.
     struct Pair { const WorldTransform2D* world; const SpriteComp* sprite; };
     std::vector<Pair> pairs;
     registry.view<WorldTransform2D, SpriteComp>(
         [&](Entity, WorldTransform2D& world, SpriteComp& sprite) {
-            if (!sprite.texture.valid()) return;   // nothing to bind/draw
+            if (!spriteDrawn(world, sprite, visibleBounds)) return;
             pairs.push_back({&world, &sprite});
         });
 
-    out.resize(pairs.size());
+    // Append: whatever the caller already put in `out` (a tilemap, say) stays put.
+    const usize base = out.size();
+    out.resize(base + pairs.size());
     jobs.parallelFor(pairs.size(), [&](usize i) {
-        const WorldTransform2D& world  = *pairs[i].world;
-        const SpriteComp&       sprite = *pairs[i].sprite;
-        out[i] = {
-            .transform = world.matrix * Mat4::scaling(sprite.size.x, sprite.size.y, 1.0f),
-            .color     = sprite.color,
-            .uv        = sprite.uv,
-            .texture   = sprite.texture,
-            .layer     = sprite.layer,
-        };
+        out[base + i] = makeItem(*pairs[i].world, *pairs[i].sprite);
     });
 }
 
 void extractMeshes(Registry& registry, std::vector<renderer::MeshInstance>& out) {
-    out.clear();
     registry.view<Transform3D, MeshComp>(
         [&](Entity, Transform3D& t, MeshComp& mesh) {
             if (!mesh.mesh.valid()) return;

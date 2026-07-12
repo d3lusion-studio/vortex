@@ -140,6 +140,7 @@ int main() {
         rhi::FrameContext frame = device->beginFrame(*swapchain);
         if (!frame.valid) continue;
 
+        instances.clear();
         ecs::extractMeshes(reg, instances);
         mesh.begin(cam, light);
         mesh.submit(instances.data(), instances.size());
