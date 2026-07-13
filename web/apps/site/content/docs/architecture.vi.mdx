@@ -1,0 +1,54 @@
+---
+title: Kiến trúc
+description: Đồ thị module, lớp RHI, và quy tắc giữ cho engine luôn khả chuyển.
+---
+
+## Đồ thị module
+
+Phụ thuộc chỉ đi theo một chiều. Một module được phép phụ thuộc vào bất kỳ module nào bên trái nó.
+
+```
+core → platform → rhi → renderer → ecs → physics → app
+         ↑                              ↑
+       jobs                          asset
+```
+
+- **core** — kiểu dữ liệu, toán học, logging, handle, JSON. Không phụ thuộc gì cả.
+- **platform** — cửa sổ, input, clock. GLFW *chỉ* tồn tại ở đây, nấp sau `pf::IWindow`.
+- **rhi** — lớp trừu tượng đồ họa. `IGraphicsDevice`, `ISwapchain`, `ICommandList`.
+- **renderer** — sprite batch, tilemap, text, particle, mesh/PBR. Chỉ nói chuyện với RHI.
+- **ecs** — registry, component, system, scene, serialization.
+- **physics** — Box2D nấp sau `physics::PhysicsWorld` và các component ECS.
+- **app** — vòng lặp ráp mọi thứ lại, cộng thêm scene manager.
+
+## Lớp RHI
+
+Đây là quyết định chịu lực của toàn bộ engine:
+
+> **Không một dòng code nào phía trên `rhi/` được phép nhắc tới Vulkan, WebGPU, hay bất kỳ kiểu dữ
+> liệu nào của một graphics API.**
+
+Renderer chỉ dựng ra các *bản mô tả* (`GraphicsPipelineDesc`, `BindGroupDesc`, `RenderItem`) rồi giao
+cho một `IGraphicsDevice`. Hiện có hai hiện thực — Vulkan và WebGPU (wgpu-native) — và chúng được chọn
+lúc chạy:
+
+```cpp
+std::unique_ptr<rhi::IGraphicsDevice> device =
+    rhi::createDevice(rhi::GraphicsAPI::WebGPU, window);
+```
+
+Chính lớp này là thứ khiến DX12 và Metal chỉ là một khối lượng công việc có giới hạn, thay vì
+phải viết lại engine từ đầu.
+
+## Hướng dữ liệu ngay từ thiết kế
+
+Mỗi frame được tách làm hai pha: **extract** và **submit**:
+
+1. Các system thay đổi component nằm trong mảng đóng gói liên tục (`updateTransforms`,
+   `updateSpriteAnimations`).
+2. `extractSprites` duyệt các mảng đó và *append* `RenderItem` phẳng vào draw list, loại bỏ sprite
+   ngoài màn hình bằng một phép kiểm tra AABB **trước khi** phải dựng bất kỳ ma trận nào.
+3. Draw list được sort một lần rồi submit theo batch.
+
+Extract *append* chứ không xóa — và đó chính xác là lý do tilemap, sprite và particle cùng rơi vào một
+batch đã sort duy nhất. `extractSpritesParallel` rải cùng khối lượng công việc đó ra job system.

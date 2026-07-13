@@ -1,0 +1,52 @@
+---
+title: Architecture
+description: The module graph, the RHI seam, and the rule that keeps the engine portable.
+---
+
+## Module graph
+
+Dependencies point in one direction only. A module may depend on anything to its left.
+
+```
+core → platform → rhi → renderer → ecs → physics → app
+         ↑                              ↑
+       jobs                          asset
+```
+
+- **core** — types, math, logging, handles, JSON. Depends on nothing.
+- **platform** — window, input, clock. GLFW lives *only* here, behind `pf::IWindow`.
+- **rhi** — the graphics seam. `IGraphicsDevice`, `ISwapchain`, `ICommandList`.
+- **renderer** — sprite batch, tilemap, text, particles, mesh/PBR. Talks only to the RHI.
+- **ecs** — registry, components, systems, scene, serialization.
+- **physics** — Box2D behind `physics::PhysicsWorld` and ECS components.
+- **app** — the loop that ties it together, plus the scene manager.
+
+## The RHI seam
+
+This is the load-bearing decision of the whole engine:
+
+> **No code above `rhi/` may name Vulkan, WebGPU, or any graphics API type.**
+
+The renderer builds *descriptions* (`GraphicsPipelineDesc`, `BindGroupDesc`, `RenderItem`) and
+hands them to an `IGraphicsDevice`. Two implementations exist today — Vulkan and WebGPU
+(wgpu-native) — and they are selected at runtime:
+
+```cpp
+std::unique_ptr<rhi::IGraphicsDevice> device =
+    rhi::createDevice(rhi::GraphicsAPI::WebGPU, window);
+```
+
+That seam is what makes DX12 and Metal a contained amount of work rather than a rewrite.
+
+## Data-oriented by construction
+
+The frame is split into **extract** and **submit**:
+
+1. Systems mutate components in packed arrays (`updateTransforms`, `updateSpriteAnimations`).
+2. `extractSprites` walks those arrays and appends flat `RenderItem`s to a draw list, rejecting
+   off-screen sprites with an AABB test before composing any matrix.
+3. The draw list is sorted once and submitted as batches.
+
+Extraction appends rather than clears, which is precisely what lets a tilemap, the sprites and
+the particles land in a single sorted batch. `extractSpritesParallel` fans the same work across
+the job system.

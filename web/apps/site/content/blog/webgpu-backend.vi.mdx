@@ -1,0 +1,41 @@
+---
+title: Backend đồ họa thứ hai, và cái giá của nó
+description: WebGPU giờ chạy song song với Vulkan sau cùng một lớp RHI — và chính lần port này phơi ra những chỗ mà lớp RHI lẽ ra phải che.
+date: '2026-07-13'
+author: Pham Quan
+---
+
+Lớp RHI luôn là một canh bạc: giữ mọi graphics API ra khỏi renderer, và backend thứ hai sẽ chỉ tốn
+một buổi chiều thay vì cả một quý. Vortex giờ chạy được trên **WebGPU** (qua `wgpu-native`) song song
+với Vulkan, chọn lúc khởi động, và renderer không hề hay biết.
+
+Canh bạc *phần lớn* đã thắng — không một dòng nào phía trên `rhi/` phải sửa. Nhưng "phần lớn" mới là
+chỗ đáng nói.
+
+## Lớp RHI đứng vững. Cái header thì không.
+
+Backend được viết dựa trên `wgpu-native` 0.19, mà `webgpu.h` của bản đó ra đời *trước* chuẩn. Nó còn
+dựa vào `<wgpu.h>` — header *extension* riêng của hãng: `wgpuSetLogLevel`, `wgpuDevicePoll`, và push
+constant native. Cả ba đều là phát minh riêng của wgpu-native.
+
+Chuyển sang `webgpu.h` chuẩn (v29) nghĩa là mọi callback trở thành future-based, mọi chuỗi trở thành
+`WGPUStringView`, và giả định của code cũ rằng `requestAdapter` trả về đồng bộ hóa ra chỉ là **tai nạn
+của đúng một hiện thực**, không phải tính chất của API.
+
+## Push constant không hề tồn tại
+
+Bài học sắc nhất: **WebGPU không có push constants.** wgpu-native cấp chúng như một extension riêng,
+và 9 trong 12 shader của engine đã lỡ phụ thuộc vào đó.
+
+Thay vì rẽ nhánh renderer, backend giờ **giả lập** `ICommandList::pushConstants()` bằng một uniform
+ring buffer theo từng frame, bind vào một group dành riêng với dynamic offset. Shader được compile
+hai lần từ cùng một nguồn GLSL — bản Vulkan giữ `layout(push_constant)`, bản WebGPU đổi sang uniform
+block. Code gameplay không đổi một dòng.
+
+Lớp trừu tượng sinh ra là để làm việc đó: nỗi đau bị giữ lại ở đúng một phía.
+
+## Hiện trạng
+
+Sprite, particle, tilemap và physics đều render trên WebGPU ngang ngửa Vulkan trên cùng một máy.
+Nhánh 3D (PBR, shadow, bloom) vẫn chỉ chạy trên Vulkan — backend WebGPU chưa có bind group cho
+image-based lighting. Đó là việc tiếp theo.

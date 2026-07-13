@@ -1,0 +1,40 @@
+---
+title: A second graphics backend, and what it cost
+description: WebGPU now runs alongside Vulkan behind the same RHI seam — and the port found the bugs the seam was supposed to prevent.
+date: '2026-07-13'
+author: Pham Quan
+---
+
+The RHI seam was always the bet: keep every graphics API out of the renderer, and a second backend
+becomes an afternoon rather than a quarter. Vortex now runs on **WebGPU** (via `wgpu-native`)
+alongside Vulkan, selected at startup, with the renderer none the wiser.
+
+The bet mostly paid — nothing above `rhi/` changed. But "mostly" is where the interesting part is.
+
+## The seam held. The header did not.
+
+The backend had been written against `wgpu-native` 0.19, whose `webgpu.h` predates the standard.
+It also leaned on `<wgpu.h>`, the vendor's *extension* header — `wgpuSetLogLevel`, `wgpuDevicePoll`,
+and native push constants. All three are wgpu-native inventions.
+
+Moving to the standard `webgpu.h` (v29) meant every callback became future-based, every string
+became a `WGPUStringView`, and the old code's assumption that `requestAdapter` returns
+synchronously turned out to be an accident of that one implementation, not a property of the API.
+
+## Push constants do not exist
+
+The sharpest lesson: **WebGPU has no push constants.** wgpu-native offers them as a native
+extension, and nine of the engine's twelve shaders had come to depend on them.
+
+Rather than fork the renderer, the backend now emulates `ICommandList::pushConstants()` with a
+per-frame uniform ring buffer, bound at a reserved group with a dynamic offset. Shaders compile
+twice from one GLSL source — the Vulkan variant keeps `layout(push_constant)`, the WebGPU variant
+swaps it for a uniform block. Gameplay code did not change a line.
+
+That is what a seam is for: the pain stayed on one side of it.
+
+## Where it stands
+
+Sprites, particles, tilemaps and physics all render on WebGPU at parity with Vulkan on the same
+machine. The 3D path (PBR, shadows, bloom) still only runs on Vulkan — the WebGPU backend has no
+bind group for image-based lighting yet. That is the next thing.

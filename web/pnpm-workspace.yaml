@@ -1,0 +1,9 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# esbuild: used by fumadocs-mdx to compile source.config.ts
+# sharp:   used by Next.js for image optimisation
+allowBuilds:
+  esbuild: true
+  sharp: true
