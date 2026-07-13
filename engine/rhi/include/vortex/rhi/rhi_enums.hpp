@@ -14,6 +14,10 @@ enum class Format {
     R32G32_SFLOAT,
     R32G32B32_SFLOAT,
     R32G32B32A32_SFLOAT,
+    // The HDR render-target format. Half floats hold values well past 1.0 while staying
+    // blendable and filterable everywhere — unlike RGBA32F, which WebGPU refuses to blend
+    // into and will not filter without an optional feature. Prefer this for scene targets.
+    R16G16B16A16_SFLOAT,
     D32_SFLOAT,
 };
 
@@ -54,6 +58,9 @@ enum class TextureUsage : u32 {
     Sampled      = 1u << 0,
     RenderTarget = 1u << 1,
     DepthStencil = 1u << 2,
+    // Writable by updateTexture() after creation. A texture created with initial
+    // pixels gets this implicitly; one that is written later must ask for it.
+    CopyDst      = 1u << 3,
 };
 
 [[nodiscard]] constexpr TextureUsage operator|(TextureUsage a, TextureUsage b) noexcept {

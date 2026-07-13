@@ -30,6 +30,7 @@ namespace vortex::rhi::vk {
         case Format::R32G32_SFLOAT:        return VK_FORMAT_R32G32_SFLOAT;
         case Format::R32G32B32_SFLOAT:     return VK_FORMAT_R32G32B32_SFLOAT;
         case Format::R32G32B32A32_SFLOAT:  return VK_FORMAT_R32G32B32A32_SFLOAT;
+        case Format::R16G16B16A16_SFLOAT:  return VK_FORMAT_R16G16B16A16_SFLOAT;
         case Format::D32_SFLOAT:           return VK_FORMAT_D32_SFLOAT;
         case Format::Undefined:            return VK_FORMAT_UNDEFINED;
     }
@@ -131,6 +132,7 @@ namespace vortex::rhi::vk {
         case Format::R32G32_SFLOAT:       return 8;
         case Format::R32G32B32_SFLOAT:    return 12;
         case Format::R32G32B32A32_SFLOAT: return 16;
+        case Format::R16G16B16A16_SFLOAT: return 8;
         case Format::Undefined:           return 0;
     }
     return 0;

@@ -88,6 +88,11 @@ public:
     i32         layer   = 0;
     bool        visible = true;
 
+    // Set this to NearestClamp for a pixel-art tileset: linear filtering samples
+    // across the cell boundary at the edge of a tile and pulls in the neighbouring
+    // cell, which is what "seams between tiles" almost always turns out to be.
+    SpriteSampler sampler = SpriteSampler::LinearClamp;
+
 private:
     u32                 m_width  = 0;
     u32                 m_height = 0;

@@ -112,10 +112,9 @@ int main() {
         rhi::RenderPassDesc pass;
         pass.color.target = frame.backbuffer;
         pass.color.loadOp = rhi::LoadOp::Clear;
-        pass.color.clearColor[0] = bg;
-        pass.color.clearColor[1] = bg;
-        pass.color.clearColor[2] = bg * 1.1f;
-        pass.color.clearColor[3] = 1.0f;
+        // `bg` is authored the way it looks on screen, so it decodes like any other
+        // sRGB value before it reaches a target the hardware will re-encode.
+        pass.color.setClear({srgbToLinear(bg), srgbToLinear(bg), srgbToLinear(bg * 1.1f), 1.0f});
         pass.width  = frame.width;
         pass.height = frame.height;
 

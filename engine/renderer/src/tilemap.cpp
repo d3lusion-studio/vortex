@@ -159,6 +159,7 @@ void TileLayer::extract(std::vector<RenderItem>& out, const Rect* visibleBounds)
                 .uv      = mirrored(tileset.frameUV(frame), o.mirrorU, o.mirrorV),
                 .texture = tileset.texture,
                 .layer   = layer,
+                .sampler = sampler,
             });
         }
     }

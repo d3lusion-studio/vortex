@@ -1,6 +1,10 @@
 #version 450
 
-// Final resolve: ACES filmic tone map of the HDR scene, then linear -> sRGB.
+// Final resolve: ACES filmic tone map of the HDR scene.
+//
+// The linear -> sRGB encode is NOT done here. The target is an sRGB-format view, so the
+// hardware does it on write — the same encode the no-post path gets for free. Doing it here
+// as well would apply the curve twice and wash the image out.
 layout(set = 0, binding = 0) uniform texture2D uScene;
 layout(set = 0, binding = 1) uniform sampler   uSampler;
 
@@ -24,8 +28,6 @@ vec3 aces(vec3 x) {
 }
 
 void main() {
-    vec3 hdr    = texture(sampler2D(uScene, uSampler), vUV).rgb * pc.params.x;
-    vec3 mapped = aces(hdr);
-    mapped = pow(mapped, vec3(1.0 / 2.2));   // backbuffer is UNORM
-    outColor = vec4(mapped, 1.0);
+    vec3 hdr = texture(sampler2D(uScene, uSampler), vUV).rgb * pc.params.x;
+    outColor = vec4(aces(hdr), 1.0);
 }

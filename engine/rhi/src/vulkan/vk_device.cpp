@@ -340,8 +340,9 @@ void VulkanDevice::updateBuffer(BufferHandle h, const void* data, u64 size, u64 
 
 TextureHandle VulkanDevice::createTexture(const TextureDesc& desc, const void* pixels) {
     VulkanTexture tex{};
-    tex.format = toVkFormat(desc.format);
-    tex.extent = {desc.width, desc.height};
+    tex.format    = toVkFormat(desc.format);
+    tex.rhiFormat = desc.format;
+    tex.extent    = {desc.width, desc.height};
 
     const bool isDepth = isDepthFormat(desc.format) ||
                          hasFlag(desc.usage, TextureUsage::DepthStencil);
@@ -354,7 +355,8 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc, const void* p
         if (hasFlag(desc.usage, TextureUsage::Sampled)) usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
     } else {
         usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
-        if (pixels) usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (pixels || hasFlag(desc.usage, TextureUsage::CopyDst))
+            usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if (hasFlag(desc.usage, TextureUsage::RenderTarget))
             usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
@@ -440,6 +442,74 @@ void VulkanDevice::destroyTexture(TextureHandle h) {
         if (t->allocation) vmaDestroyImage(m_allocator, t->image, t->allocation);
         m_textures.destroy(h);
     }
+}
+
+void VulkanDevice::updateTexture(TextureHandle h, const void* pixels,
+                                 u32 x, u32 y, u32 width, u32 height) {
+    VulkanTexture* t = m_textures.get(h);
+    if (t == nullptr || pixels == nullptr || width == 0u || height == 0u) return;
+
+    const u32 bpp = bytesPerPixel(t->rhiFormat);
+    if (bpp == 0u) return;
+
+    // A frame still in flight may be sampling this image. There is no per-resource
+    // timeline to wait on here, so the whole device is drained — see the note on
+    // IGraphicsDevice::updateTexture.
+    if (t->currentLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) waitIdle();
+
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * bpp;
+
+    VkBufferCreateInfo sci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    sci.size  = bytes;
+    sci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VmaAllocationCreateInfo saci{};
+    saci.usage = VMA_MEMORY_USAGE_AUTO;
+    saci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                 VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VkBuffer          staging      = VK_NULL_HANDLE;
+    VmaAllocation     stagingAlloc = VK_NULL_HANDLE;
+    VmaAllocationInfo stagingInfo{};
+    VK_CHECK(vmaCreateBuffer(m_allocator, &sci, &saci, &staging, &stagingAlloc, &stagingInfo));
+    std::memcpy(stagingInfo.pMappedData, pixels, bytes);
+
+    // A partial write has to keep the pixels outside the rect, so the transition
+    // starts from whatever layout the image is in rather than from UNDEFINED.
+    const VkImageLayout oldLayout = t->currentLayout;
+    const bool wasRead = oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    immediateSubmit([&](VkCommandBuffer cmd) {
+        VkImageMemoryBarrier toDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toDst.oldLayout        = oldLayout;
+        toDst.newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toDst.image            = t->image;
+        toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        toDst.srcAccessMask    = wasRead ? VK_ACCESS_SHADER_READ_BIT : 0;
+        toDst.dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd,
+                             wasRead ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                                     : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
+
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageOffset      = {static_cast<i32>(x), static_cast<i32>(y), 0};
+        copy.imageExtent      = {width, height, 1};
+        vkCmdCopyBufferToImage(cmd, staging, t->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+        VkImageMemoryBarrier toRead{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toRead.oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toRead.newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toRead.image            = t->image;
+        toRead.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        toRead.srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toRead.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toRead);
+    });
+
+    vmaDestroyBuffer(m_allocator, staging, stagingAlloc);
+    t->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 SamplerHandle VulkanDevice::createSampler(const SamplerDesc& desc) {
@@ -607,7 +677,8 @@ PipelineHandle VulkanDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     VkVertexInputBindingDescription binding{};
     binding.binding   = 0;
     binding.stride    = desc.vertexLayout.stride;
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    binding.inputRate = desc.vertexLayout.perInstance ? VK_VERTEX_INPUT_RATE_INSTANCE
+                                                      : VK_VERTEX_INPUT_RATE_VERTEX;
 
     std::vector<VkVertexInputAttributeDescription> attrs;
     attrs.reserve(desc.vertexLayout.attributes.size());

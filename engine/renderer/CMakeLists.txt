@@ -2,6 +2,8 @@ include(VortexShaders)
 
 vortex_embed_shader(sprite.vert     sprite_vert_spv     _vert_header)
 vortex_embed_shader(sprite.frag     sprite_frag_spv     _frag_header)
+vortex_embed_shader(mesh2d.vert     mesh2d_vert_spv     _mesh2d_vert_header)
+vortex_embed_shader(mesh2d.frag     mesh2d_frag_spv     _mesh2d_frag_header)
 vortex_embed_shader(mesh.vert       mesh_vert_spv       _mesh_vert_header)
 vortex_embed_shader(mesh.frag       mesh_frag_spv       _mesh_frag_header)
 vortex_embed_shader(shadow.vert     shadow_vert_spv     _shadow_vert_header)
@@ -17,6 +19,8 @@ vortex_add_module(renderer
     SOURCES
         src/sprite_batch.cpp
         src/sprite_animation.cpp
+        src/atlas.cpp
+        src/mesh2d.cpp
         src/particles.cpp
         src/tilemap.cpp
         src/render_graph.cpp
@@ -24,6 +28,8 @@ vortex_add_module(renderer
         src/post_process.cpp
         ${_vert_header}
         ${_frag_header}
+        ${_mesh2d_vert_header}
+        ${_mesh2d_frag_header}
         ${_mesh_vert_header}
         ${_mesh_frag_header}
         ${_shadow_vert_header}

@@ -5,6 +5,7 @@
 #include "vortex/ecs/registry.hpp"
 #include "vortex/jobs/job_system.hpp"
 #include "vortex/renderer/culling.hpp"
+#include "vortex/renderer/sprite_batch.hpp"
 
 #include <functional>
 
@@ -21,16 +22,29 @@ Mat4 localMatrix(const Transform2D& t) {
 // A sprite is drawn only if it has a texture, and only if it survives culling.
 bool spriteDrawn(const WorldTransform2D& world, const SpriteComp& sprite, const Rect* bounds) {
     if (!sprite.texture.valid()) return false;
-    return bounds == nullptr || renderer::quadVisible(world.matrix, sprite.size, *bounds);
+    return bounds == nullptr ||
+           renderer::quadVisible(world.matrix, sprite.size, sprite.anchorOffset(), *bounds);
 }
 
 renderer::RenderItem makeItem(const WorldTransform2D& world, const SpriteComp& sprite) {
+    // Scale the unit quad to the sprite's size and slide it so the anchor lands on
+    // the entity's origin. Both are diagonal-plus-translation, so they are written
+    // straight into one matrix rather than composed with two 4x4 multiplies — this
+    // runs once per visible sprite per frame.
+    const Vec2 offset = sprite.anchorOffset();
+    Mat4 local;
+    local.at(0, 0) = sprite.size.x;
+    local.at(1, 1) = sprite.size.y;
+    local.at(0, 3) = offset.x;
+    local.at(1, 3) = offset.y;
+
     return {
-        .transform = world.matrix * Mat4::scaling(sprite.size.x, sprite.size.y, 1.0f),
+        .transform = world.matrix * local,
         .color     = sprite.color,
-        .uv        = sprite.uv,
+        .uv        = renderer::flippedUV(sprite.uv, sprite.flipX, sprite.flipY),
         .texture   = sprite.texture,
         .layer     = sprite.layer,
+        .sampler   = sprite.sampler,
     };
 }
 

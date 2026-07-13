@@ -35,6 +35,15 @@ target_compile_definitions(triangle PRIVATE VORTEX_TRIANGLE_SHADER_DIR="${_shade
 add_executable(sprites sprites/main.cpp)
 target_link_libraries(sprites PRIVATE Vortex::vortex)
 
+add_executable(sprite2d sprite2d/main.cpp)
+target_link_libraries(sprite2d PRIVATE Vortex::vortex)
+
+add_executable(atlas atlas/main.cpp)
+target_link_libraries(atlas PRIVATE Vortex::vortex)
+
+add_executable(mesh2d mesh2d/main.cpp)
+target_link_libraries(mesh2d PRIVATE Vortex::vortex)
+
 add_executable(ecs ecs/main.cpp)
 target_link_libraries(ecs PRIVATE Vortex::vortex)
 
@@ -134,3 +143,6 @@ target_link_libraries(hotreload PRIVATE Vortex::vortex)
 target_compile_definitions(hotreload PRIVATE
     VORTEX_GAME_LIB="$<TARGET_FILE:game>")
 add_dependencies(hotreload game)
+
+add_executable(bloom2d bloom2d/main.cpp)
+target_link_libraries(bloom2d PRIVATE Vortex::vortex)

@@ -1,5 +1,6 @@
 #pragma once
 #include "vortex/core/math/vec2.hpp"
+#include "vortex/core/math/color.hpp"
 #include "vortex/core/math/vec4.hpp"
 #include "vortex/core/types.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
@@ -19,12 +20,16 @@ struct InputState {
     bool released = false;   // went up this frame
 };
 
+// Colours are LINEAR light, like every colour the renderer takes. Authoring them through
+// Color::fromRgb is what keeps them readable — the hex is the colour you would pick in a
+// design tool, and fromRgb decodes it. Assigning a raw Vec4 here is legal but means you
+// are stating linear values yourself, which will not look like the hex you had in mind.
 struct Style {
-    Vec4 panel   {0.12f, 0.13f, 0.18f, 0.92f};
-    Vec4 button  {0.20f, 0.22f, 0.30f, 1.0f};
-    Vec4 hovered {0.28f, 0.32f, 0.44f, 1.0f};
-    Vec4 active  {0.16f, 0.40f, 0.62f, 1.0f};
-    Vec4 text    {0.92f, 0.94f, 0.98f, 1.0f};
+    Vec4 panel   = Color::fromRgb(0x1F2230).withAlpha(0.92f);
+    Vec4 button  = Color::fromRgb(0x33384D);
+    Vec4 hovered = Color::fromRgb(0x47526F);
+    Vec4 active  = Color::fromRgb(0x2A669E);
+    Vec4 text    = Color::fromRgb(0xEBEFFA);
     f32  textScale = 1.0f;
     i32  baseLayer = 1000;   // UI draws on top of game sprites by default
 };

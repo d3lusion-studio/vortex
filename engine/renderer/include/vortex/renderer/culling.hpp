@@ -35,19 +35,26 @@ namespace vortex::renderer {
 }
 
 // Overlap test written out rather than building a Rect, so the common reject
-// short-circuits on the first failing axis.
-[[nodiscard]] inline bool quadVisible(const Mat4& world, Vec2 size, const Rect& view) noexcept {
-    const f32 cx = world.at(0, 3);
+// short-circuits on the first failing axis. `offset` shifts the quad's centre in
+// the quad's own space before the transform — that is where an anchor lands, and
+// leaving it out of the test would cull an off-centre sprite a frame early.
+[[nodiscard]] inline bool quadVisible(const Mat4& world, Vec2 size, Vec2 offset,
+                                      const Rect& view) noexcept {
+    const f32 cx = world.at(0, 3) + world.at(0, 0) * offset.x + world.at(0, 1) * offset.y;
     const f32 hx = 0.5f * (std::fabs(world.at(0, 0) * size.x) + std::fabs(world.at(0, 1) * size.y));
     if (cx - hx > view.right() || cx + hx < view.left()) return false;
 
-    const f32 cy = world.at(1, 3);
+    const f32 cy = world.at(1, 3) + world.at(1, 0) * offset.x + world.at(1, 1) * offset.y;
     const f32 hy = 0.5f * (std::fabs(world.at(1, 0) * size.x) + std::fabs(world.at(1, 1) * size.y));
     return !(cy - hy > view.bottom() || cy + hy < view.top());
 }
 
+[[nodiscard]] inline bool quadVisible(const Mat4& world, Vec2 size, const Rect& view) noexcept {
+    return quadVisible(world, size, Vec2{}, view);
+}
+
 [[nodiscard]] inline bool quadVisible(const Mat4& transform, const Rect& view) noexcept {
-    return quadVisible(transform, Vec2::one(), view);
+    return quadVisible(transform, Vec2::one(), Vec2{}, view);
 }
 
 // Drop off-screen items from an already-built list, in place and order-preserving.

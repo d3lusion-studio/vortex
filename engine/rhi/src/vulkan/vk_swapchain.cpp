@@ -22,7 +22,11 @@ void VulkanSwapchain::build() {
     vkb::SwapchainBuilder builder{m_device.physicalDevice(), m_device.vkDevice(), m_device.surface()};
     builder.set_desired_present_mode(toVkPresentMode(m_presentMode))
            .set_desired_extent(m_pendingWidth, m_pendingHeight)
-           .set_desired_format(VkSurfaceFormatKHR{VK_FORMAT_B8G8R8A8_UNORM,
+           // An _SRGB backbuffer makes the hardware encode linear -> sRGB on write, which is
+           // what lets everything above render in linear light without a manual gamma step.
+           // Blending happens before the encode, so it is correct too — that is the whole
+           // reason to ask for the format rather than to pow() in a shader.
+           .set_desired_format(VkSurfaceFormatKHR{VK_FORMAT_B8G8R8A8_SRGB,
                                                   VK_COLOR_SPACE_SRGB_NONLINEAR_KHR})
            .add_image_usage_flags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 

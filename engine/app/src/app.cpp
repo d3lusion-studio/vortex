@@ -26,6 +26,12 @@
 
 namespace vortex::app {
 
+// The scene target's format when post-processing is on. Float, so a colour can exceed 1
+// and still be a colour rather than a clamp — which is the whole premise of bloom. Half
+// rather than full floats: RGBA32F cannot be alpha-blended into under WebGPU, and blending
+// is exactly what a sprite does.
+inline constexpr rhi::Format kHdrFormat = rhi::Format::R16G16B16A16_SFLOAT;
+
 // Declaration order is destruction order reversed: the batcher and the asset
 // manager both free GPU objects in their destructors, so the device must outlive
 // them, and the swapchain must go before the device it was created from.
@@ -43,6 +49,11 @@ struct App::Impl {
 
     std::unique_ptr<assets::AssetManager>  assets;
     std::unique_ptr<renderer::SpriteBatch> batch;
+
+    // Only built when AppConfig::postProcess is on. Without them the loop draws straight
+    // to the backbuffer and pays for none of this.
+    std::unique_ptr<renderer::RenderGraph> graph;
+    std::unique_ptr<renderer::PostProcess> post;
 
     SceneManager          scenes;
     ecs::SerializeContext serialize;
@@ -99,8 +110,18 @@ App::App(AppConfig config) : m_impl(std::make_unique<Impl>()) {
                                             *s.window);
 
     s.assets = std::make_unique<assets::AssetManager>(*s.device, *s.fs);
-    s.batch  = std::make_unique<renderer::SpriteBatch>(*s.device, s.swapchain->format(),
-                                                       config.maxSprites);
+
+    // With post-processing on, sprites are drawn into a float target rather than the
+    // backbuffer, so the batcher's pipeline must be built for THAT format — a pipeline
+    // is bound to the format of the target it renders to.
+    const rhi::Format sceneFormat = config.postProcess ? kHdrFormat : s.swapchain->format();
+    s.batch = std::make_unique<renderer::SpriteBatch>(*s.device, sceneFormat, config.maxSprites);
+
+    if (config.postProcess) {
+        s.graph = std::make_unique<renderer::RenderGraph>(*s.device);
+        s.post  = std::make_unique<renderer::PostProcess>(*s.device, kHdrFormat,
+                                                          s.swapchain->format());
+    }
 
     // Scene files name their textures; the asset manager is what turns a name into a
     // handle and back. Capturing the raw pointer is safe: the manager outlives every
@@ -245,6 +266,10 @@ f32   App::time()           const { return m_impl->elapsed; }
 f32   App::deltaTime()      const { return m_impl->delta; }
 f32   App::fps()            const { return m_impl->fpsValue; }
 u64   App::frameCount()     const { return m_impl->frames; }
+renderer::PostProcess::Settings* App::postSettings() {
+    return m_impl->post ? &m_impl->config.post : nullptr;
+}
+
 u32   App::drawCalls()      const { return m_impl->batch->drawCallCount(); }
 usize App::visibleSprites() const { return m_impl->scenes.active().visibleSprites(); }
 
@@ -319,23 +344,14 @@ int App::run() {
         if (!frame.valid) continue;
 
         const Color& clear = s.config.clearColor;
-        rhi::RenderPassDesc pass;
-        pass.color.target        = frame.backbuffer;
-        pass.color.loadOp        = rhi::LoadOp::Clear;
-        pass.color.clearColor[0] = clear.r;
-        pass.color.clearColor[1] = clear.g;
-        pass.color.clearColor[2] = clear.b;
-        pass.color.clearColor[3] = clear.a;
-        pass.width  = frame.width;
-        pass.height = frame.height;
+        const f32 clearColor[4] = {clear.r, clear.g, clear.b, clear.a};
+        const rhi::Viewport viewport{.x      = 0.0f,
+                                     .y      = 0.0f,
+                                     .width  = static_cast<f32>(frame.width),
+                                     .height = static_cast<f32>(frame.height)};
 
-        frame.cmd->beginRenderPass(pass);
-        frame.cmd->setViewport({.x      = 0.0f,
-                                .y      = 0.0f,
-                                .width  = static_cast<f32>(frame.width),
-                                .height = static_cast<f32>(frame.height)});
-        frame.cmd->setScissor(0, 0, frame.width, frame.height);
-
+        // Fill the batcher first, so the two paths below differ only in where its output
+        // lands. Extraction has no idea a post-processing chain exists.
         s.batch->begin(s.scenes.active().camera.viewProjection());
         {
             VORTEX_PROFILE_ZONE("app.extract");
@@ -344,9 +360,44 @@ int App::run() {
         }
         if (!s.items.empty()) s.batch->submit(s.items.data(), s.items.size());
         if (s.renderFn) s.renderFn(*this, *s.batch);
-        s.batch->end(*frame.cmd);
 
-        frame.cmd->endRenderPass();
+        if (s.post) {
+            // Sprites into an HDR target, then bloom and tone mapping resolve it to the screen.
+            s.graph->beginFrame();
+            const auto backbuffer = s.graph->importBackbuffer(frame.backbuffer,
+                                                              frame.width, frame.height);
+            const auto sceneHdr   = s.graph->colorTarget("scene_hdr", frame.width, frame.height,
+                                                         kHdrFormat);
+
+            s.graph->addPass("sprites",
+                [&](renderer::RenderGraph::PassBuilder& b) { b.writeColor(sceneHdr, clearColor); },
+                [&](rhi::ICommandList& cmd) {
+                    cmd.setViewport(viewport);
+                    cmd.setScissor(0, 0, frame.width, frame.height);
+                    s.batch->end(cmd);
+                });
+
+            s.post->addPasses(*s.graph, sceneHdr, backbuffer, frame.width, frame.height,
+                              s.config.post);
+            s.graph->execute(*frame.cmd);
+        } else {
+            rhi::RenderPassDesc pass;
+            pass.color.target        = frame.backbuffer;
+            pass.color.loadOp        = rhi::LoadOp::Clear;
+            pass.color.clearColor[0] = clear.r;
+            pass.color.clearColor[1] = clear.g;
+            pass.color.clearColor[2] = clear.b;
+            pass.color.clearColor[3] = clear.a;
+            pass.width  = frame.width;
+            pass.height = frame.height;
+
+            frame.cmd->beginRenderPass(pass);
+            frame.cmd->setViewport(viewport);
+            frame.cmd->setScissor(0, 0, frame.width, frame.height);
+            s.batch->end(*frame.cmd);
+            frame.cmd->endRenderPass();
+        }
+
         s.device->endFrame();
 
         ++s.frames;

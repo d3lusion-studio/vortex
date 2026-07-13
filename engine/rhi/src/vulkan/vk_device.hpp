@@ -31,6 +31,8 @@ public:
 
     [[nodiscard]] TextureHandle createTexture(const TextureDesc&, const void* pixels) override;
     void destroyTexture(TextureHandle) override;
+    void updateTexture(TextureHandle, const void* pixels,
+                       u32 x, u32 y, u32 width, u32 height) override;
 
     [[nodiscard]] SamplerHandle createSampler(const SamplerDesc&) override;
     void destroySampler(SamplerHandle) override;

@@ -1,4 +1,5 @@
 #pragma once
+#include "vortex/core/math/color.hpp"
 #include "vortex/core/types.hpp"
 #include "vortex/rhi/rhi_enums.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
@@ -19,7 +20,12 @@ struct BufferDesc {
 struct TextureDesc {
     u32          width  = 0;
     u32          height = 0;
-    Format       format = Format::R8G8B8A8_UNORM;
+    // sRGB by default, because by default a texture is a picture — and the bytes of a
+    // picture are sRGB-encoded. An _SRGB format makes the GPU decode them to linear light
+    // on every sample, for free, which is what the rest of the renderer expects to receive.
+    // A texture that holds DATA rather than colour (a mask, a height field, packed normals)
+    // must say so and ask for R8G8B8A8_UNORM, or its values will be silently curved.
+    Format       format = Format::R8G8B8A8_SRGB;
     TextureUsage usage  = TextureUsage::Sampled;
     bool         cube   = false;   // create a cubemap (6 faces, sampled as samplerCube)
     const char*  debugName = nullptr;
@@ -62,6 +68,11 @@ struct VertexAttribute {
 struct VertexLayout {
     u32                          stride = 0;
     std::vector<VertexAttribute> attributes;
+
+    // Advance the buffer once per instance rather than once per vertex. A sprite
+    // batch binds one such buffer and builds the quad's corners from the vertex
+    // index, so the whole quad costs one record instead of four.
+    bool perInstance = false;
 };
 
 struct GraphicsPipelineDesc {
@@ -102,7 +113,16 @@ struct ColorAttachment {
     TextureHandle target;
     LoadOp        loadOp  = LoadOp::Clear;
     StoreOp       storeOp = StoreOp::Store;
+
+    // LINEAR light, not the hex you picked in a design tool. The backbuffer is an sRGB
+    // format, so the hardware encodes whatever is written to it — including this clear —
+    // and an sRGB value put here would get the curve applied to it a second time.
+    // Color::fromRgb() already decodes; setClear() is the short way to say that.
     f32           clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    void setClear(const Color& c) noexcept {
+        clearColor[0] = c.r; clearColor[1] = c.g; clearColor[2] = c.b; clearColor[3] = c.a;
+    }
 };
 
 struct DepthAttachment {

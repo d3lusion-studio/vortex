@@ -7,6 +7,7 @@
 #include "vortex/ecs/scene.hpp"
 #include "vortex/ecs/serialize.hpp"
 #include "vortex/platform/input_map.hpp"
+#include "vortex/renderer/post_process.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
 
 #include <functional>
@@ -39,6 +40,17 @@ struct AppConfig {
     f32 maxFrameTime = 0.25f;
 
     u32 maxSprites = 100000;
+
+    // Render the scene into a floating-point target and run bloom + ACES tone mapping
+    // on the way to the screen, instead of drawing straight to the backbuffer.
+    //
+    // This is what makes a sprite glow: with it on, colours are no longer clamped at 1,
+    // so a sprite tinted {4, 3, 1, 1} is four times brighter than white and the bright
+    // pass picks it up. With it off (the default) that tint just reads as white — there
+    // is nowhere for the extra brightness to go. The cost is one extra full-screen target
+    // and a handful of full-screen passes, which a flat 2D game has no use for.
+    bool                            postProcess = false;
+    renderer::PostProcess::Settings post{};
 
     // Spread world-matrix composition across the job system. Pays off once the
     // visible set reaches the thousands; below that the sync costs more.
@@ -150,6 +162,12 @@ public:
     // The handle-to-name mapping the two calls above use. Take a copy of it to drive
     // ecs::savePrefab / ecs::instantiate yourself.
     [[nodiscard]] const ecs::SerializeContext& serializeContext() const;
+
+    // Live post-processing knobs — threshold, intensity, exposure, and whether bloom and
+    // FXAA run at all. Read every frame, so a game can fade the bloom up as it likes.
+    // Whether post-processing exists at all is fixed at construction (the pipelines are
+    // built for the target's format), so this is null unless AppConfig::postProcess was on.
+    [[nodiscard]] renderer::PostProcess::Settings* postSettings();
 
     [[nodiscard]] f32   time()      const;   // seconds since run() began
     [[nodiscard]] f32   deltaTime() const;   // clamped to maxFrameTime

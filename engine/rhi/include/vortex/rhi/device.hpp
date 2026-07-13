@@ -26,6 +26,17 @@ public:
                                                       const void* pixels = nullptr) = 0;
     virtual void destroyTexture(TextureHandle) = 0;
 
+    // Overwrite a rectangle of a 2D colour texture. `pixels` is tightly packed —
+    // width * bytesPerPixel(format) per row, no padding. The texture must carry
+    // TextureUsage::CopyDst (implicit when it was created with initial pixels).
+    //
+    // The write lands before any subsequent draw reads the texture, so a caller
+    // that rewrites pixels every frame does not have to synchronise by hand. It is
+    // a full pipeline stall on Vulkan, though: this is for CPU-authored images and
+    // atlas growth, not for streaming a video.
+    virtual void updateTexture(TextureHandle, const void* pixels,
+                               u32 x, u32 y, u32 width, u32 height) = 0;
+
     [[nodiscard]] virtual SamplerHandle createSampler(const SamplerDesc&) = 0;
     virtual void destroySampler(SamplerHandle) = 0;
 

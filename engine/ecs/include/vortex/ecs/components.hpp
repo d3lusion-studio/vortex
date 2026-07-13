@@ -8,6 +8,7 @@
 #include "vortex/core/types.hpp"
 #include "vortex/ecs/entity.hpp"
 #include "vortex/renderer/mesh.hpp"
+#include "vortex/renderer/render_item.hpp"
 #include "vortex/renderer/sprite_animation.hpp"
 #include "vortex/renderer/sprite_atlas.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
@@ -36,10 +37,34 @@ struct SpriteComp {
     Vec2               size{1.0f, 1.0f};   // local quad size before transform
     i32                layer = 0;          // painter order
 
+    // Which point of the quad sits on the entity's position, in unit coordinates:
+    // (0,0) is the bottom-left corner, (1,1) the top-right, (0.5,0.5) the centre.
+    // It is also what the sprite rotates and scales about, so a character standing
+    // on the ground wants (0.5, 0) and a health bar filling rightwards wants (0, 0.5).
+    Vec2 anchor{0.5f, 0.5f};
+
+    // Mirror the drawn image without touching the transform — the usual way to face
+    // a character left. Flipping via a negative scale would also mirror the anchor
+    // and any child entity, which is almost never what a game wants.
+    bool flipX = false;
+    bool flipY = false;
+
+    // Nearest for pixel art, Repeat to tile the texture across the quad by taking
+    // `uv` past 1.0. Sprites sharing a texture but not a sampler cost two draw calls,
+    // so a scene normally settles on one.
+    renderer::SpriteSampler sampler = renderer::SpriteSampler::LinearClamp;
+
     // Point a sprite at one frame of an atlas.
     void setRegion(const renderer::TextureRegion& region) {
         texture = region.texture;
         uv      = region.uv;
+    }
+
+    // The offset from the entity's origin to the quad's centre, in the sprite's own
+    // (pre-transform) space. The draw path and the culler must agree on this, so it
+    // lives here rather than being open-coded in both.
+    [[nodiscard]] Vec2 anchorOffset() const noexcept {
+        return {(0.5f - anchor.x) * size.x, (0.5f - anchor.y) * size.y};
     }
 };
 

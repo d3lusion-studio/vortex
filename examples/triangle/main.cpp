@@ -91,10 +91,7 @@ int main() {
         rhi::RenderPassDesc pass;
         pass.color.target     = frame.backbuffer;
         pass.color.loadOp     = rhi::LoadOp::Clear;
-        pass.color.clearColor[0] = 0.05f;
-        pass.color.clearColor[1] = 0.05f;
-        pass.color.clearColor[2] = 0.08f;
-        pass.color.clearColor[3] = 1.0f;
+        pass.color.setClear(Color::fromRgb(0x0D0D14));
         pass.width  = frame.width;
         pass.height = frame.height;
 

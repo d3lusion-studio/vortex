@@ -71,12 +71,15 @@ public:
     WebGPUSwapchain(WebGPUDevice& device, WGPUSurface surface, const SwapchainDesc& desc,
                     WGPUTextureFormat format)
         : m_device(device), m_surface(surface), m_format(format),
+          m_viewFormat(srgbViewFormat(format)),
           m_width(desc.width), m_height(desc.height),
           m_present(toWGPUPresentMode(desc.present)) {
         configure();
     }
 
-    [[nodiscard]] Format format() const override { return fromWGPUFormat(m_format); }
+    // What everything above the RHI sees, and what pipelines are built against: the sRGB
+    // view's format, not the surface's own. They differ only in the encode.
+    [[nodiscard]] Format format() const override { return fromWGPUFormat(m_viewFormat); }
     void getExtent(u32& w, u32& h) const override { w = m_width; h = m_height; }
 
     void requestResize(u32 w, u32 h) override {
@@ -95,9 +98,14 @@ public:
         cfg.width       = m_width;
         cfg.height      = m_height;
         cfg.presentMode = m_present;
+        // The sRGB view has to be declared here or creating it later is a validation error.
+        cfg.viewFormatCount = 1;
+        cfg.viewFormats     = &m_viewFormat;
         wgpuSurfaceConfigure(m_surface, &cfg);
         m_needsConfigure = false;
     }
+
+    [[nodiscard]] WGPUTextureFormat wgpuViewFormat() const { return m_viewFormat; }
 
     [[nodiscard]] bool needsConfigure() const { return m_needsConfigure; }
     void markNeedsConfigure() { m_needsConfigure = true; }
@@ -109,7 +117,8 @@ public:
 private:
     WebGPUDevice&     m_device;
     WGPUSurface       m_surface;
-    WGPUTextureFormat m_format;
+    WGPUTextureFormat m_format;       // what the surface itself is (never sRGB, per the spec)
+    WGPUTextureFormat m_viewFormat;   // the sRGB view everything renders through
     u32               m_width;
     u32               m_height;
     WGPUPresentMode   m_present;
@@ -355,13 +364,15 @@ TextureHandle WebGPUDevice::createTexture(const TextureDesc& desc, const void* p
         if (hasFlag(desc.usage, TextureUsage::Sampled)) usage |= WGPUTextureUsage_TextureBinding;
     } else {
         usage = WGPUTextureUsage_TextureBinding;
-        if (pixels) usage |= WGPUTextureUsage_CopyDst;
+        if (pixels || hasFlag(desc.usage, TextureUsage::CopyDst))
+            usage |= WGPUTextureUsage_CopyDst;
         if (hasFlag(desc.usage, TextureUsage::RenderTarget))
             usage |= WGPUTextureUsage_RenderAttachment;
     }
 
     WebGPUTexture tex{};
     tex.format  = toWGPUFormat(desc.format);
+    tex.bpp     = bytesPerPixel(desc.format);
     tex.width   = desc.width;
     tex.height  = desc.height;
     tex.isDepth = depth;
@@ -381,15 +392,36 @@ TextureHandle WebGPUDevice::createTexture(const TextureDesc& desc, const void* p
         dst.texture = tex.texture;
         dst.aspect  = WGPUTextureAspect_All;
         WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
-        layout.bytesPerRow  = desc.width * 4;
+        layout.bytesPerRow  = desc.width * tex.bpp;
         layout.rowsPerImage = desc.height;
         WGPUExtent3D ext{desc.width, desc.height, 1};
         wgpuQueueWriteTexture(m_queue, &dst, pixels,
-                              static_cast<usize>(desc.width) * desc.height * 4, &layout, &ext);
+                              static_cast<usize>(desc.width) * desc.height * tex.bpp, &layout, &ext);
     }
 
     tex.view = wgpuTextureCreateView(tex.texture, nullptr);
     return m_textures.create(tex);
+}
+
+void WebGPUDevice::updateTexture(TextureHandle h, const void* pixels,
+                                 u32 x, u32 y, u32 width, u32 height) {
+    WebGPUTexture* t = m_textures.get(h);
+    if (t == nullptr || pixels == nullptr || width == 0u || height == 0u || t->bpp == 0u) return;
+
+    // The queue orders the write against the draws that follow it, so unlike the
+    // Vulkan path this needs no explicit synchronisation.
+    WGPUTexelCopyTextureInfo dst = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    dst.texture = t->texture;
+    dst.aspect  = WGPUTextureAspect_All;
+    dst.origin  = {x, y, 0};
+
+    WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
+    layout.bytesPerRow  = width * t->bpp;
+    layout.rowsPerImage = height;
+
+    WGPUExtent3D ext{width, height, 1};
+    wgpuQueueWriteTexture(m_queue, &dst, pixels,
+                          static_cast<usize>(width) * height * t->bpp, &layout, &ext);
 }
 
 void WebGPUDevice::destroyTexture(TextureHandle h) {
@@ -539,7 +571,8 @@ PipelineHandle WebGPUDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
 
     WGPUVertexBufferLayout vbl = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
     vbl.arrayStride    = desc.vertexLayout.stride;
-    vbl.stepMode       = WGPUVertexStepMode_Vertex;
+    vbl.stepMode       = desc.vertexLayout.perInstance ? WGPUVertexStepMode_Instance
+                                                       : WGPUVertexStepMode_Vertex;
     vbl.attributeCount = attrs.size();
     vbl.attributes     = attrs.data();
 
@@ -649,10 +682,18 @@ FrameContext WebGPUDevice::beginFrame(ISwapchain& scBase) {
     }
     if (suboptimal) sc.markNeedsConfigure();
 
+    // Render through the sRGB view, so the hardware encodes on write.
+    WGPUTextureViewDescriptor vd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    vd.format          = sc.wgpuViewFormat();
+    vd.dimension       = WGPUTextureViewDimension_2D;
+    vd.mipLevelCount   = 1;
+    vd.arrayLayerCount = 1;
+    vd.aspect          = WGPUTextureAspect_All;
+
     WebGPUTexture backbuffer{};
     backbuffer.texture     = st.texture;
-    backbuffer.view        = wgpuTextureCreateView(st.texture, nullptr);
-    backbuffer.format      = sc.wgpuFormat();
+    backbuffer.view        = wgpuTextureCreateView(st.texture, &vd);
+    backbuffer.format      = sc.wgpuViewFormat();
     backbuffer.width       = sc.width();
     backbuffer.height      = sc.height();
     backbuffer.ownsTexture = false;   // owned by the surface

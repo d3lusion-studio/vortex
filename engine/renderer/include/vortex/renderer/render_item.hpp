@@ -7,16 +7,22 @@
 
 namespace vortex::renderer {
 
-// Flat, renderer-facing draw record. The transform maps a unit quad centred at
-// the origin (corners at +/-0.5) into world space, so it carries position,
-// rotation, scale and sprite size together. Keeping a full Mat4 here (rather
-// than 2D-only fields) is what lets a mesh RenderItem reuse the same path later.
+enum class SpriteSampler : u8 {
+    LinearClamp,
+    NearestClamp,
+    LinearRepeat,
+    NearestRepeat,
+};
+
+inline constexpr u32 kSpriteSamplerCount = 4;
+
 struct RenderItem {
     Mat4               transform = Mat4::identity();
     Vec4               color{1.0f, 1.0f, 1.0f, 1.0f};
     Rect               uv = kFullUV;
     rhi::TextureHandle texture;
     i32                layer = 0;
+    SpriteSampler      sampler = SpriteSampler::LinearClamp;
 };
 
 }

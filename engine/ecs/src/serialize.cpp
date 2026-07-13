@@ -13,6 +13,25 @@ namespace {
 constexpr i32 kSceneVersion = 1;
 constexpr i32 kNoParent     = -1;
 
+// Samplers are written by name. A scene outlives the enum's ordering, and a file
+// that says "nearest_clamp" survives someone adding a sampler in the middle of the
+// list in a way that a bare index would not.
+constexpr const char* kSamplerNames[renderer::kSpriteSamplerCount] = {
+    "linear_clamp", "nearest_clamp", "linear_repeat", "nearest_repeat",
+};
+
+const char* samplerName(renderer::SpriteSampler s) {
+    return kSamplerNames[static_cast<usize>(s)];
+}
+
+renderer::SpriteSampler samplerFrom(const json::Value& v, renderer::SpriteSampler fallback) {
+    if (!v.isString()) return fallback;
+    const std::string name = v.asString();
+    for (u32 i = 0; i < renderer::kSpriteSamplerCount; ++i)
+        if (name == kSamplerNames[i]) return static_cast<renderer::SpriteSampler>(i);
+    return fallback;
+}
+
 }
 
 const ComponentRegistry::Entry* ComponentRegistry::find(std::string_view name) const {
@@ -49,6 +68,10 @@ ComponentRegistry& defaultComponents() {
                 v.set("uv", toJson(s.uv));
                 v.set("size", toJson(s.size));
                 v.set("layer", s.layer);
+                v.set("anchor", toJson(s.anchor));
+                v.set("flipX", s.flipX);
+                v.set("flipY", s.flipY);
+                v.set("sampler", samplerName(s.sampler));
                 return v;
             },
             [](SpriteComp& s, const json::Value& v, const SerializeContext& ctx) {
@@ -57,6 +80,10 @@ ComponentRegistry& defaultComponents() {
                 s.uv      = rectFrom(v["uv"], s.uv);
                 s.size    = vec2From(v["size"], s.size);
                 s.layer   = v["layer"].asI32(s.layer);
+                s.anchor  = vec2From(v["anchor"], s.anchor);
+                s.flipX   = v["flipX"].asBool(s.flipX);
+                s.flipY   = v["flipY"].asBool(s.flipY);
+                s.sampler = samplerFrom(v["sampler"], s.sampler);
             });
 
         // `frame` and `finished` are outputs of the animation system, so they are
@@ -204,6 +231,7 @@ json::Value saveTilemap(const renderer::Tilemap& map, const SerializeContext& ct
         v.set("tileSize", toJson(l.tileSize));
         v.set("origin", toJson(l.origin));
         v.set("parallax", toJson(l.parallax));
+        v.set("sampler", samplerName(l.sampler));
         v.set("tint", toJson(static_cast<Vec4>(l.tint)));
         v.set("layer", l.layer);
         v.set("visible", l.visible);
@@ -247,6 +275,7 @@ void loadTilemap(renderer::Tilemap& map, const json::Value& v, const SerializeCo
         l.tileset     = loadSheet(lv["tileset"], ctx);
         l.firstTileId = lv["firstTileId"].asU32(1);
         l.origin      = vec2From(lv["origin"]);
+        l.sampler  = samplerFrom(lv["sampler"], l.sampler);
         l.parallax = vec2From(lv["parallax"], {1.0f, 1.0f});
         l.layer    = lv["layer"].asI32();
         l.visible  = lv["visible"].asBool(true);

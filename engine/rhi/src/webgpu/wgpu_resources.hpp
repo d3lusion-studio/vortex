@@ -15,6 +15,7 @@ struct WebGPUTexture {
     WGPUTexture     texture = nullptr;
     WGPUTextureView view    = nullptr;
     WGPUTextureFormat format = WGPUTextureFormat_Undefined;
+    u32  bpp    = 0;   // pixel pitch, for updateTexture
     u32  width  = 0;
     u32  height = 0;
     bool isDepth = false;
