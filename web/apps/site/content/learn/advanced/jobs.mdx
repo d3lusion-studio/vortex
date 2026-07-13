@@ -1,0 +1,64 @@
+---
+title: Jobs and parallelism
+description: The job system, parallel extraction, and when threading actually pays.
+---
+
+`JobSystem` is a thread pool with one useful primitive:
+
+```cpp
+app.jobs().parallelFor(count, [&](usize i) {
+    process(items[i]);
+}, /*grain*/ 1024);
+```
+
+`grain` is the number of items one worker takes at a time. Too small and the synchronisation costs
+more than the work; the default of 1024 is tuned for work that is cheap per item, which is what most
+engine work is.
+
+`parallelFor` **blocks until every item is done**. There is no future, no promise, and nothing to
+join — which is deliberate: a fork-join primitive that cannot outlive its own call cannot leak a
+dangling reference into a worker.
+
+## What the engine parallelises
+
+Two things, both off by default:
+
+```cpp
+app::App app{{
+    .parallelExtract = true,   // fan world-matrix composition across the pool
+    .workerCount     = 0,      // 0 = hardware concurrency - 1
+}};
+```
+
+`ecs::extractSpritesParallel` and `ParticleWorld::update(dt, jobs)` are the same work as their serial
+versions, spread across the pool.
+
+<Callout type="warn">
+  **Threading is not free, and below a few thousand sprites it loses.** The synchronisation and the
+  cache traffic of moving work between cores costs more than composing a few hundred matrices on one.
+  Turn `parallelExtract` on when you have measured a frame that needs it — not before.
+</Callout>
+
+## Zero workers
+
+`workerCount` may be 0 in the config, which means *hardware concurrency*. But a `JobSystem`
+constructed with **no workers at all** is a supported mode: `parallelFor` then runs the body inline on
+the calling thread.
+
+That is not a fallback bolted on for safety — it is what makes a single-threaded build a
+configuration rather than a code path, and it means a system written against `parallelFor` works
+either way with no `#ifdef`.
+
+## Writing a parallel system
+
+The rule is the one every data-parallel system has: **do not write what another index reads.**
+
+```cpp
+// Fine: each index writes only its own element.
+app.jobs().parallelFor(bodies.size(), [&](usize i) {
+    bodies[i].position += bodies[i].velocity * dt;
+});
+```
+
+Structural changes to the registry — spawning, destroying, adding components — are **not** safe from
+a worker. Collect the intent in the parallel pass and apply it serially afterwards.

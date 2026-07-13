@@ -1,0 +1,76 @@
+---
+title: Asset
+description: Nạp texture, cache, và cơ chế hủy trì hoãn giữ cho GPU không bị hớ.
+---
+
+`AssetManager` biến một đường dẫn thành một tài nguyên GPU, **một lần**. Hỏi cùng một đường dẫn hai lần
+thì bạn nhận lại đúng texture đó — cache theo đường dẫn, nên không có gì bị upload lên GPU hai lần.
+
+```cpp
+// Dạng ngắn nhất: nạp, cache, giải sang GPU handle, sẵn sàng nhét vào SpriteComp.
+rhi::TextureHandle tex = app.loadTexture("assets/player.png");
+```
+
+Dạng hai bước, khi bạn cần cả asset phía CPU:
+
+```cpp
+assets::AssetManager& am = app.assets();
+
+assets::TextureHandle       handle = am.loadTexture("assets/player.png");
+const assets::TextureAsset* meta   = am.get(handle);        // width, height, channels
+rhi::TextureHandle          gpu    = am.gpuTexture(handle); // thứ renderer cần
+```
+
+Có hai loại handle là **cố ý**. `assets::TextureHandle` gọi tên *asset*; `rhi::TextureHandle` gọi tên
+*đối tượng GPU*. Tách chúng ra chính là thứ khiến việc lưu scene khả thi: `pathOf()` ánh xạ ngược một
+GPU handle về đường dẫn nó sinh ra, và đó là thứ được ghi vào file.
+
+## Gỡ tải
+
+```cpp
+am.unload(handle);
+```
+
+Đối tượng GPU **không** bị hủy ngay. Nó được xếp hàng và giải phóng sau vài frame, khi không còn frame
+nào đang bay có thể còn tham chiếu tới nó. Hủy một texture mà GPU đang sample là một lỗi use-after-free
+— validation layer sẽ bắt được, còn bản release thì không — nên manager đơn giản là **không bao giờ**
+làm thế.
+
+Đó cũng là lý do manager có `beginFrame()` và được vòng lặp gọi: đó là nơi các lệnh hủy trì hoãn được
+thu hồi.
+
+## Bản đồ Tiled
+
+File `.tmj` (định dạng JSON của Tiled) nạp thẳng vào một `Tilemap`, với ảnh tileset được giải theo đường
+dẫn tương đối so với file bản đồ:
+
+```cpp
+renderer::Tilemap map;
+assets::loadTiledMap(map, app.assets(), app.fileSystem(), "assets/level.tmj");
+```
+
+Các object đặt trong Tiled đi vào dưới dạng `TiledObject`, với việc tra cứu thuộc tính có kiểu và có
+giá trị mặc định — nên một level chưa đặt một trường nào đó vẫn nạp được.
+`TiledImportOptions::onObject` được gọi một lần cho mỗi object trong quá trình import — đó là nơi bạn
+biến một object layer thành entity.
+
+### Hot reload
+
+`TiledWatcher` import lại bản đồ khi file trên đĩa thay đổi:
+
+```cpp
+assets::TiledWatcher watcher{"assets/level.tmj"};
+watcher.load(map, app.assets(), app.fileSystem());
+
+app.onUpdate([&](app::App& a, f32) {
+    watcher.poll(map, a.assets(), a.fileSystem());   // chỉ import lại nếu file đổi
+});
+```
+
+Việc import lại là **import toàn phần**, một cách có chủ ý: một ảnh tileset đổi kích thước sẽ khiến bản
+đồ index vào một texture không còn khớp với nó nữa.
+
+## File đến từ đâu
+
+Đường dẫn đi qua `pf::IFileSystem`, không phải `std::fstream` trực tiếp. Lớp gián tiếp đó chính là thứ
+sau này cho phép cắm một archive hay một virtual filesystem vào mà **không phải sửa một chỗ gọi nào**.

@@ -1,0 +1,113 @@
+---
+title: Tilemaps
+description: Tile layers, Tiled import, flip bits, and why a tilemap costs almost nothing to draw.
+---
+
+A `TileLayer` is a grid of `TileId`s over one tileset. A `Tilemap` is a stack of them.
+
+```cpp
+renderer::TileLayer layer;
+layer.resize(64, 32);          // in tiles
+layer.fill(0);                 // 0 = empty
+layer.setTile(3, 5, 12);       // tile index 12 at (3, 5)
+
+const renderer::TileId id = layer.tile(3, 5);
+```
+
+## Coordinates
+
+Tile space and world space are not the same thing, and the layer converts between them:
+
+```cpp
+const Vec2 centre = layer.tileCenter(3, 5);   // world position of a tile's middle
+
+i32 tx, ty;
+layer.worldToTile(worldPos, tx, ty);          // which tile is under this point
+
+const Rect bounds = layer.worldBounds();      // the whole layer, in world units
+```
+
+## Flip bits
+
+A `TileId` is an index **plus flags** packed into the same integer — the convention Tiled uses, so a
+map that flips or rotates tiles round-trips without a translation table:
+
+```cpp
+const renderer::TileId index = renderer::tileIndex(id);      // the tile itself
+const renderer::TileId flags = renderer::tileFlipBits(id);   // horizontal / vertical / diagonal
+```
+
+Read the index with `tileIndex()` rather than using the raw id: a flipped tile has high bits set, and
+comparing the raw value against a plain index will silently miss it.
+
+## Drawing
+
+A tilemap does not spawn an entity per tile. It **extracts** straight to render items, and appends to
+the same draw list as the sprites — so a tilemap, the sprites and the particles all land in one
+sorted batch, and the whole level is a draw call or two:
+
+```cpp
+std::vector<renderer::RenderItem> items;
+layer.extract(items, &app.camera().visibleBounds());
+```
+
+Passing the camera bounds means only the tiles on screen are ever touched. A 4096×4096 map costs the
+same to draw as a 64×32 one.
+
+## Loading from Tiled
+
+Draw the level in [Tiled](https://www.mapeditor.org/), save as `.tmj` (JSON), and load it:
+
+```cpp
+renderer::Tilemap map;
+assets::loadTiledMap(map, app.assets(), app.fileSystem(), "assets/level.tmj");
+```
+
+Tileset images are resolved relative to the map file and loaded through the asset manager, so they
+share the cache with everything else.
+
+### Import options
+
+```cpp
+assets::TiledImportOptions opts{
+    .origin        = {0.0f, 0.0f},   // world position of the map's top-left corner
+    .unitsPerPixel = 2.0f,           // 16px art in a world that is not 16px
+    .baseLayer     = 0,              // draw layer of the first tile layer
+};
+```
+
+Tiled's y axis points **down** and the engine's points **up**; the importer lays the map out downward
+from `origin`, so you do not have to flip anything yourself.
+
+### Object layers
+
+Spawn points, trigger zones and doors are what turn a grid of tiles into a level. They arrive as
+`TiledObject`:
+
+```cpp
+opts.onBeginImport = [&] { despawnEverythingFromTheLastImport(); };
+
+opts.onObject = [&](const assets::TiledObject& obj) {
+    if (obj.type != "enemy") return;                    // Tiled's "class"
+
+    const Vec2 at    = obj.bounds.center();             // world space, min-corner + size
+    const f32  speed = obj.properties
+                     ? obj.properties->get("speed").asF32(1.0f)   // absent -> fallback
+                     : 1.0f;
+    spawnEnemy(app, at, speed);
+};
+
+assets::loadTiledMap(map, app.assets(), app.fileSystem(), "assets/level.tmj", opts);
+```
+
+`onBeginImport` runs before any object, on **every** import — including a hot-reload. That is where
+the entities you spawned from the last import get cleared, and skipping it is how you end up with two
+of every enemy after saving in Tiled.
+
+<Callout type="warn">
+  A missing or unsupported file fails **loudly**, with a message naming the fix, and leaves the map
+  cleared rather than half-built. The one that usually bites: Tiled saves tilesets as `.tsx` (XML) by
+  default, which the importer does not read — save the tileset as `.tsj` instead.
+</Callout>
+
+See [Assets](/learn/concepts/assets) for hot-reloading a map with `TiledWatcher`.

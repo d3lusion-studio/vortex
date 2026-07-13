@@ -1,0 +1,64 @@
+---
+title: Job và song song hóa
+description: Job system, extract song song, và khi nào đa luồng mới thật sự có lãi.
+---
+
+`JobSystem` là một thread pool với đúng một primitive hữu dụng:
+
+```cpp
+app.jobs().parallelFor(count, [&](usize i) {
+    process(items[i]);
+}, /*grain*/ 1024);
+```
+
+`grain` là số phần tử mà một worker nhận mỗi lần. Quá nhỏ thì chi phí đồng bộ còn đắt hơn cả công việc;
+giá trị mặc định 1024 được tinh chỉnh cho loại việc rẻ trên mỗi phần tử — vốn là đa số công việc trong
+engine.
+
+`parallelFor` **chặn cho tới khi mọi phần tử xong**. Không có future, không có promise, không có gì để
+join — đây là chủ ý: một primitive fork-join không thể sống lâu hơn chính lời gọi của nó thì không thể
+rò một tham chiếu treo vào worker.
+
+## Engine song song hóa cái gì
+
+Hai thứ, và cả hai đều **tắt mặc định**:
+
+```cpp
+app::App app{{
+    .parallelExtract = true,   // rải việc dựng ma trận thế giới ra pool
+    .workerCount     = 0,      // 0 = số lõi phần cứng - 1
+}};
+```
+
+`ecs::extractSpritesParallel` và `ParticleWorld::update(dt, jobs)` làm đúng công việc như bản tuần tự
+của chúng, chỉ là trải ra pool.
+
+<Callout type="warn">
+  **Đa luồng không miễn phí, và dưới vài nghìn sprite thì nó lỗ.** Chi phí đồng bộ cùng lưu lượng cache
+  khi chuyển việc giữa các lõi còn đắt hơn việc dựng vài trăm ma trận trên một lõi. Hãy bật
+  `parallelExtract` khi bạn đã **đo** được một frame cần tới nó — đừng bật trước.
+</Callout>
+
+## Không có worker nào
+
+`workerCount` có thể bằng 0 trong config, nghĩa là *lấy theo số lõi phần cứng*. Nhưng một `JobSystem`
+được dựng với **không một worker nào** cũng là một chế độ hợp lệ: khi đó `parallelFor` chạy thẳng phần
+thân ngay trên luồng gọi.
+
+Đó không phải một cái chốt chặn gắn thêm cho an toàn — nó là thứ khiến một bản build đơn luồng trở thành
+một **cấu hình** chứ không phải một nhánh code, và nghĩa là một system viết dựa trên `parallelFor` chạy
+được cả hai đường mà không cần một `#ifdef` nào.
+
+## Viết một system song song
+
+Quy tắc thì mọi system song song dữ liệu đều có: **đừng ghi vào thứ mà một chỉ số khác đọc.**
+
+```cpp
+// Ổn: mỗi chỉ số chỉ ghi vào đúng phần tử của chính nó.
+app.jobs().parallelFor(bodies.size(), [&](usize i) {
+    bodies[i].position += bodies[i].velocity * dt;
+});
+```
+
+Thay đổi **cấu trúc** registry — sinh, hủy, thêm component — thì **không** an toàn từ một worker. Hãy
+gom ý định lại trong pass song song, rồi áp dụng tuần tự sau đó.

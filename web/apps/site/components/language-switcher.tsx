@@ -26,7 +26,7 @@ export function LanguageSwitcher({ current, label }: { current: Lang; label: str
 
   return (
     <div
-      className="flex items-center gap-0.5 rounded-lg bg-white/5 p-0.5"
+      className="flex items-center border border-[var(--border-subtle)]"
       role="group"
       aria-label={label}
     >
@@ -37,9 +37,9 @@ export function LanguageSwitcher({ current, label }: { current: Lang; label: str
           onClick={() => router.push(pathFor(lang))}
           aria-current={lang === current}
           className={cn(
-            'rounded-md px-2 py-1 text-xs font-medium transition-colors',
+            'px-2 py-1 font-mono text-[11px] transition-colors',
             lang === current
-              ? 'bg-accent-500/20 text-accent-300'
+              ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
               : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]',
           )}
         >

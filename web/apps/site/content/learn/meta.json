@@ -1,0 +1,14 @@
+{
+  "title": "Learn",
+  "pages": [
+    "index",
+    "getting-started",
+    "concepts",
+    "rendering",
+    "physics",
+    "input",
+    "audio",
+    "advanced",
+    "reference"
+  ]
+}

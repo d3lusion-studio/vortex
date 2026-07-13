@@ -1,0 +1,103 @@
+---
+title: Sprites and the camera
+description: How a sprite gets on screen, what a draw call costs, and how the 2D camera maps pixels.
+---
+
+Attach a `SpriteComp` and the renderer takes care of the rest.
+
+```cpp
+const ecs::Entity e = app.scene().spawn();
+app.registry().get<ecs::Transform2D>(e).position = {0.0f, 0.0f};
+app.registry().emplace<ecs::SpriteComp>(e, ecs::SpriteComp{
+    .texture = app.loadTexture("assets/player.png"),
+    .color   = Color::white(),   // tints the texture; white leaves it alone
+    .size    = {64.0f, 64.0f},   // the quad, before the transform scales it
+    .layer   = 0,                // painter order; higher draws on top
+});
+```
+
+`color` **multiplies** the texture. With `whiteTexture()` — a 1×1 opaque white pixel — that gives you
+flat coloured quads with no image on disk, which is how the particle, UI and debug-draw paths work.
+
+## Batching
+
+The batcher groups consecutive sprites that share a texture into one draw call. It **does not
+reorder** them across textures: sorting is by `layer`, and within a layer, order of extraction.
+
+That gives you the one rule that matters for 2D performance:
+
+<Callout type="info">
+  Interleaving textures costs draw calls. Ten sprites alternating between two atlases is ten draws;
+  the same ten grouped by atlas is two. Pack sprites that appear together into the same atlas and
+  the batcher does the rest.
+</Callout>
+
+`app.drawCalls()` tells you how many you actually got. The `sprites` example draws 20 000 sprites
+across three textures in **three** draw calls.
+
+## Sprite sheets
+
+A `TextureRegion` is a window onto a texture — the page plus a UV rect. `SpriteSheet` cuts a uniform
+grid into them, indexed row-major from the top-left:
+
+```cpp
+const renderer::SpriteSheet sheet{
+    .texture       = app.loadTexture("assets/player.png"),
+    .textureWidth  = 256,
+    .textureHeight = 64,
+    .columns       = 4,
+    .rows          = 1,
+    // margin = border around the whole sheet, spacing = gutter between cells.
+    // Leave both at 0 for a tightly packed sheet.
+};
+
+sprite.setRegion(sheet.region(2));   // sets texture + uv together
+```
+
+`sheet.region(i).sizePixels` is the source size of the cell, which usually makes a sensible default
+for `SpriteComp::size`.
+
+## The 2D camera
+
+`Camera2D` is a plain struct — no hidden state, no matrices to keep in sync:
+
+```cpp
+renderer::Camera2D& cam = app.camera();
+cam.position = {0.0f, 0.0f};
+cam.zoom     = 1.0f;         // >1 zooms in
+```
+
+`viewportWidth` and `viewportHeight` are written by the loop from the framebuffer size every frame,
+so a resize is already handled. The projection is orthographic and **centred**: world `(0, 0)` is the
+middle of the window, `+Y` is up.
+
+### Screen and world
+
+```cpp
+f32 mx, my;
+app.input().mousePosition(mx, my);
+const Vec2 world = cam.screenToWorld(mx, my);
+```
+
+### Culling
+
+`cam.visibleBounds()` returns the world-space rect the camera can see. Hand it to extraction and
+off-screen sprites are rejected by an AABB test before their world matrix is ever composed:
+
+```cpp
+ecs::extractSprites(registry, items, &cam.visibleBounds());
+```
+
+`app.visibleSprites()` reports how many survived — the gap between that and your entity count is the
+work culling saved you.
+
+## Drawing outside the ECS
+
+`onRender` hands you the batcher directly, and what you draw there is batched together with the
+scene's sprites rather than flushed separately:
+
+```cpp
+app.onRender([](app::App& a, renderer::SpriteBatch& batch) {
+    batch.drawSprite(a.whiteTexture(), {0.0f, 0.0f}, {8.0f, 8.0f}, Color::red());
+});
+```

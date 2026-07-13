@@ -1,5 +1,5 @@
 @import 'tailwindcss';
-@import 'fumadocs-ui/css/black.css';
+@import 'fumadocs-ui/css/vitepress.css';
 @import 'fumadocs-ui/css/style.css';
 @import '@vortex/ui/tokens.css';
 
@@ -11,13 +11,27 @@ body {
   color: var(--text-primary);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Faint grid backdrop — reads as a viewport/scene grid without competing with content. */
+/*
+ * The pixel grid. An 8px lattice, drawn at the threshold of perception — you should feel that the
+ * page is aligned to a grid without ever consciously seeing one. It fades out downward so it reads
+ * as a backdrop behind the hero rather than wallpaper across the whole document.
+ */
 .bg-grid {
   background-image:
-    linear-gradient(to right, rgb(255 255 255 / 0.04) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(255 255 255 / 0.04) 1px, transparent 1px);
-  background-size: 56px 56px;
-  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  mask-image: linear-gradient(to bottom, #000 0%, transparent 90%);
+}
+
+/*
+ * Pixel typefaces are drawn on a fixed lattice, so any antialiasing turns their hard edges into
+ * grey mush. Turning it off is what makes them look intentional rather than broken.
+ */
+.font-pixel {
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
 }

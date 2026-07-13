@@ -1,0 +1,123 @@
+---
+title: Entities, components, systems
+description: The sparse-set registry, how views iterate, and why systems are plain functions.
+---
+
+An **entity** is an id. A **component** is plain data attached to one. A **system** is a function
+that walks components. There is no base class to inherit, no virtual `Update()`, and no component
+that owns behaviour.
+
+## Spawning
+
+```cpp
+const ecs::Entity e = app.scene().spawn();   // already has a Transform2D
+
+app.registry().get<ecs::Transform2D>(e).position = {0.0f, 4.0f};
+app.registry().emplace<ecs::SpriteComp>(e, ecs::SpriteComp{
+    .texture = app.loadTexture("assets/player.png"),
+    .color   = Color::white(),
+    .size    = {1.0f, 1.0f},
+});
+```
+
+`Scene::spawn()` gives every entity a `Transform2D` up front, because an entity with no position is
+almost never what you meant.
+
+## Registry
+
+```cpp
+ecs::Registry& reg = app.registry();
+
+T&   emplace<T>(e, args...);   // construct in place
+T*   tryGet<T>(e);             // nullptr if absent
+T&   get<T>(e);                // asserts it is present
+bool has<T>(e);
+void remove<T>(e);
+
+bool alive(e);
+void destroy(e);
+```
+
+Entity ids are recycled with a generation counter, so a handle to a destroyed entity is detected
+rather than silently aliasing whatever was spawned next into its slot.
+
+## Views
+
+Iteration is a callback, not an iterator pair:
+
+```cpp
+reg.view<physics::RigidBody2D, ecs::Transform2D>(
+    [dt](ecs::Entity e, physics::RigidBody2D& body, ecs::Transform2D& tf) {
+        body.velocity *= 1.0f - 0.5f * dt;
+        tf.position   += body.velocity * dt;
+    });
+```
+
+The view drives off the **first** component's pool and looks the rest up, so put the rarest
+component first: a view of `<Player, Transform2D>` visits one entity, a view of
+`<Transform2D, Player>` visits every entity and rejects all but one.
+
+<Callout type="info">
+  A view is safe against structural change: a system may spawn entities, destroy them, or add and
+  remove components while iterating without corrupting the walk. It buys that by iterating a
+  **snapshot** of the driving pool's entity list — one vector copy per view, per call. That is
+  cheap next to the work a system does, but it is not free, so do not call `view()` in an inner
+  loop.
+</Callout>
+
+## Why sparse sets
+
+Components live in packed arrays. Every entity that has a `SpriteComp` sits next to every other one
+in memory, with no holes and no pointer chasing, so a system that touches ten thousand of them walks
+a contiguous block instead of hopping around the heap. That is the entire performance argument for
+ECS, and it is why removing a component **swaps the last element into the hole** rather than leaving
+one.
+
+The consequence you can feel: **component order is not stable.** Never store an index into a pool,
+and never assume two systems visit entities in the same order.
+
+## Built-in components
+
+| Component | Purpose |
+| --- | --- |
+| `Transform2D` | `position`, `rotation` (radians, CCW), `scale` |
+| `WorldTransform2D` | Composed from the hierarchy each frame; do not write it |
+| `Parent` | Attaches an entity to another; children inherit the parent's transform |
+| `SpriteComp` | `texture`, `color`, `size`, uv rect, sort layer |
+| `SpriteAnimator` | Plays a clip onto the `SpriteComp` each frame |
+| `Velocity` | Plain `Vec2`, for gameplay that wants no solver |
+| `Transform3D` | `position`, `rotation` (quaternion), `scale` |
+| `MeshComp` | `mesh`, `albedo`, `metallic`, `roughness` |
+
+## Systems
+
+A system is any function over a registry. Register it on the scene and the loop runs it inside
+`update`:
+
+```cpp
+void applyDrag(ecs::Registry& reg, f32 dt);
+
+app.scene().addSystem([](ecs::Registry& reg, f32 dt) { applyDrag(reg, dt); });
+```
+
+The engine's own systems are ordinary functions with the same shape — `updateTransforms`,
+`updateSpriteAnimations`, `extractSprites`. There is nothing privileged about them, and you can call
+them yourself if you drive the frame by hand.
+
+## Extraction
+
+Rendering does not walk the registry. A separate pass **extracts** a flat array of `RenderItem` and
+the renderer sorts and batches that:
+
+```cpp
+std::vector<renderer::RenderItem> items;
+ecs::extractSprites(registry, items, &camera.visibleBounds());
+```
+
+Passing the camera bounds rejects off-screen sprites with an AABB test *before* composing their
+world matrix — a culled sprite costs a compare, not a 4×4 multiply. Every `extract*` function
+**appends**, which is exactly what lets a tilemap, the sprites and the particles land in one sorted
+batch. The caller clears.
+
+`extractSpritesParallel` fans the same work across the job system; `AppConfig::parallelExtract`
+switches the built-in loop over to it.

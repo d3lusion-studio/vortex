@@ -1,0 +1,93 @@
+---
+title: 3D, PBR and post-processing
+description: Meshes, a GGX material model, PCF shadows, and an HDR bloom chain.
+---
+
+<Callout type="warn">
+  The 3D path works, but 2D is where the engine is complete. Expect gaps: there is no scene graph
+  for meshes beyond `Parent`, no skinning, and the WebGPU backend does not yet bind the
+  image-based-lighting set — so IBL is Vulkan-only today.
+</Callout>
+
+## Meshes
+
+```cpp
+const renderer::MeshData    cube = renderer::makeCube(1.0f);
+const renderer::MeshHandle  mesh = meshRenderer.upload(cube);
+
+const ecs::Entity e = app.scene().spawn();
+app.registry().emplace<ecs::Transform3D>(e, ecs::Transform3D{
+    .position = {0.0f, 1.0f, 0.0f},
+    .scale    = {1.0f, 1.0f, 1.0f},
+});
+app.registry().emplace<ecs::MeshComp>(e, ecs::MeshComp{
+    .mesh      = mesh,
+    .albedo    = Color::fromRgb(0xCC5544),
+    .metallic  = 0.0f,
+    .roughness = 0.4f,
+});
+```
+
+`Transform3D` carries a **quaternion** rotation, not Euler angles — no gimbal lock, and interpolation
+that behaves.
+
+Meshes extract like everything else:
+
+```cpp
+std::vector<renderer::MeshInstance> instances;
+ecs::extractMeshes(registry, instances);
+```
+
+## Material model
+
+Metallic-roughness, evaluated with GGX:
+
+- **`albedo`** — base colour. For a metal, this is the *reflectance* tint, not a diffuse colour.
+- **`metallic`** — 0 or 1 in practice. Values in between are for transitions (rust, dust), not for
+  "a bit shiny".
+- **`roughness`** — 0 is a mirror, 1 is chalk. Below about 0.05 a direct light becomes a single
+  aliased pixel, so keep a floor on it.
+
+## Lighting and shadows
+
+One `DirectionalLight` drives both the shading and the shadow map:
+
+```cpp
+renderer::DirectionalLight sun{
+    .direction = {-0.4f, -1.0f, -0.5f},   // the direction light TRAVELS, not the direction to it
+    .color     = {1.0f, 0.98f, 0.92f},
+    .intensity = 3.0f,
+    .ambient   = {0.2f, 0.22f, 0.28f},
+
+    // The shadow map is an orthographic box around this point. It is not a cascade:
+    // one box covers the whole shadowed area, so a tight extent buys you resolution.
+    .shadowTarget   = {0.0f, 0.0f, 0.0f},
+    .shadowExtent   = 16.0f,
+    .shadowDistance = 40.0f,
+};
+```
+
+Shadows are filtered with PCF. The single most common problem is **acne** — a surface shadowing
+itself in a moiré pattern — and the fix is almost always a tighter `shadowExtent`: the box is a fixed
+resolution, so doubling its size halves the texel density under everything in it.
+
+## Post-processing
+
+The chain is HDR: the scene renders to a floating-point target, and the tonemap is what brings it back
+into display range at the end.
+
+1. **Bright pass** — extracts what is above the bloom threshold.
+2. **Blur** — separable, two passes.
+3. **Composite** — added back on top, additively.
+4. **Tonemap** — ACES, HDR to LDR.
+5. **FXAA** — a cheap post-AA pass. There is no MSAA in the pipeline.
+
+```cpp
+renderer::PostProcess post{app.device(), hdrFormat, swapchainFormat};
+```
+
+<Callout type="info">
+  Bloom on an HDR pipeline behaves differently from bloom on an LDR one. Nothing "blows out" unless
+  it is genuinely brighter than white, so a light with `intensity = 1.0` will never bloom no matter
+  what threshold you pick. That is correct, and it is why the sun above is set to 3.
+</Callout>

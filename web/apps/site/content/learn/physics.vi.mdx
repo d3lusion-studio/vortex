@@ -1,0 +1,120 @@
+---
+title: Vật lý
+description: Body, collider, joint, truy vấn và va chạm — Box2D nấp sau các component ECS.
+---
+
+Gọi `app.physics()` là world cho scene đang hoạt động được tạo ra. Từ đó, vòng lặp step nó bên trong
+mỗi fixed update, **trước** khi `onFixedUpdate` chạy — nên callback của bạn đọc được transform mà solver
+đã giải xong ở chính step này, không phải step trước.
+
+Một scene không bao giờ hỏi tới thì không trả giá gì cả.
+
+## Một body
+
+```cpp
+#include "vortex/physics/components.hpp"
+
+const ecs::Entity e = app.scene().spawn();
+app.registry().get<ecs::Transform2D>(e).position = {0.0f, 200.0f};
+
+app.registry().emplace<physics::RigidBody2D>(e, physics::RigidBody2D{
+    .type        = physics::BodyType::Dynamic,
+    .density     = 1.0f,
+    .friction    = 0.3f,
+    .restitution = 0.4f,     // độ nảy, [0, 1]
+});
+app.registry().emplace<physics::BoxCollider2D>(e, physics::BoxCollider2D{
+    .halfExtents = {32.0f, 32.0f},
+});
+```
+
+Collider quyết định hình dạng; sprite chỉ vẽ nó. Cái còn lại là `CircleCollider2D`.
+
+<Callout type="warn">
+  Các trường của `RigidBody2D` chỉ được đọc **một lần**, khi world lần đầu nhìn thấy entity. Sửa chúng
+  sau đó **không** chỉnh lại body. Bất cứ thứ gì phải thay đổi lúc chạy đều phải đi qua setter của
+  `PhysicsWorld` — `setLinearVelocity`, `setTransform`, `setEnabled`, v.v.
+</Callout>
+
+### Các loại body
+
+| Loại | Di chuyển | Va chạm với |
+| --- | --- | --- |
+| `Static` | Không bao giờ | Dynamic |
+| `Kinematic` | Chỉ khi bạn dời nó; bỏ qua lực | Dynamic |
+| `Dynamic` | Được mô phỏng | Tất cả |
+
+## Mét, không phải pixel
+
+Solver làm việc bằng **mét**, nên `gravity` có đơn vị m/s². `AppConfig::pixelsPerMeter` là cầu nối: ở
+giá trị mặc định 100, một sprite 100 pixel là một body 1 mét.
+
+Điều này quan trọng hơn vẻ ngoài của nó. Box2D được tinh chỉnh cho vật thể cỡ 0,1 m đến 10 m. Một sprite
+bị coi là body 64 **mét** sẽ có cảm giác như đang rơi trong siro, và chỉnh gravity bao nhiêu cũng không
+chữa được — hãy sửa **tỉ lệ**.
+
+## Lực và vận tốc
+
+```cpp
+physics::PhysicsWorld& world = app.physics();
+
+world.applyLinearImpulse(e, {0.0f, 400.0f});   // một cú hích tức thì, ví dụ cú nhảy
+world.applyForce(e, {200.0f, 0.0f});           // lực duy trì, trải trên step
+world.applyTorque(e, 5.0f);
+
+world.setLinearVelocity(e, {120.0f, 0.0f});    // ghi đè thẳng lên solver
+world.setTransform(e, {0.0f, 0.0f}, 0.0f);     // dịch chuyển tức thời
+world.setEnabled(e, false);                    // đưa hẳn ra khỏi mô phỏng
+
+const Vec2 v = world.linearVelocity(e);
+```
+
+Impulse và force thuộc về `onFixedUpdate`. Áp trong `onUpdate` thì chúng bị nhân với một khoảng thời
+gian frame **thay đổi**, khiến cú nhảy cao hơn trên máy mạnh.
+
+## Truy vấn
+
+Những hàm này chỉ đọc broadphase và không step gì cả, nên gọi ở đâu cũng an toàn:
+
+```cpp
+const physics::RaycastHit hit = world.raycast(from, to);
+if (hit.hit()) {
+    // hit.entity, hit.point, hit.normal, hit.fraction
+}
+
+const ecs::Entity clicked = world.pointQuery(app.camera().screenToWorld(mx, my));
+const std::vector<ecs::Entity> inArea = world.overlapRect(area);
+```
+
+`pointQuery` chính là câu hỏi "tôi vừa bấm trúng cái gì".
+
+## Sensor
+
+Một collider có `isSensor = true` sẽ báo cáo chồng lấn nhưng **không đẩy** gì cả. Vùng kích hoạt, bán
+kính nhặt đồ, checkpoint.
+
+## Va chạm
+
+```cpp
+world.setContactBegin([](ecs::Entity a, ecs::Entity b) { /* vừa chạm nhau */ });
+world.setContactEnd  ([](ecs::Entity a, ecs::Entity b) { /* vừa rời nhau */ });
+```
+
+<Callout type="warn">
+  Chúng bắn **trong lúc** step đang chạy. Đừng sinh hay hủy entity bên trong đó — hãy xếp hàng ý định
+  rồi xử lý sau khi step trả về. Hủy một body mà solver đang giải dở là một cú crash, và cú crash đó sẽ
+  **không** chỉ vào callback của bạn.
+</Callout>
+
+## Joint
+
+Cả hai body phải đã tồn tại trong world, nghĩa là step đưa chúng vào phải đã diễn ra. Hãy tạo joint ở
+frame **sau** khi sinh entity, đừng tạo ngay trong cùng một hơi.
+
+```cpp
+// Một thanh cứng. Nâng `hertz` lên trên 0 để nó đàn hồi.
+world.createDistanceJoint(a, b, /*length*/ 100.0f, /*hertz*/ 0.0f, /*damping*/ 0.0f);
+
+// Một bản lề: ghim tại một điểm thế giới, tự do xoay quanh điểm đó.
+world.createRevoluteJoint(a, b, anchorWorld);
+```

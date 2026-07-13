@@ -1,0 +1,10 @@
+{
+  "title": "Core concepts",
+  "pages": [
+    "app",
+    "ecs",
+    "scenes",
+    "assets"
+  ],
+  "defaultOpen": true
+}

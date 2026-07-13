@@ -1,0 +1,113 @@
+---
+title: Tilemap
+description: Tile layer, import từ Tiled, flip bit, và vì sao vẽ tilemap gần như không tốn gì.
+---
+
+`TileLayer` là một lưới các `TileId` trên một tileset. `Tilemap` là một chồng các layer đó.
+
+```cpp
+renderer::TileLayer layer;
+layer.resize(64, 32);          // tính theo số ô
+layer.fill(0);                 // 0 = trống
+layer.setTile(3, 5, 12);       // tile số 12 tại ô (3, 5)
+
+const renderer::TileId id = layer.tile(3, 5);
+```
+
+## Tọa độ
+
+Không gian ô và không gian thế giới **không** phải một, và layer là thứ chuyển đổi giữa chúng:
+
+```cpp
+const Vec2 centre = layer.tileCenter(3, 5);   // vị trí thế giới của tâm một ô
+
+i32 tx, ty;
+layer.worldToTile(worldPos, tx, ty);          // điểm này nằm trên ô nào
+
+const Rect bounds = layer.worldBounds();      // cả layer, theo đơn vị thế giới
+```
+
+## Flip bit
+
+Một `TileId` là chỉ số **cộng thêm cờ**, gói chung trong một số nguyên — đúng quy ước Tiled dùng, nên
+một bản đồ có lật hoặc xoay tile sẽ đi vòng qua lại mà không cần bảng dịch:
+
+```cpp
+const renderer::TileId index = renderer::tileIndex(id);      // chính tile đó
+const renderer::TileId flags = renderer::tileFlipBits(id);   // lật ngang / dọc / chéo
+```
+
+Hãy đọc chỉ số bằng `tileIndex()` thay vì dùng id thô: một tile bị lật có bit cao được bật, và so sánh
+giá trị thô với một chỉ số thường sẽ **lặng lẽ trượt**.
+
+## Vẽ
+
+Tilemap không sinh một entity cho mỗi ô. Nó **extract** thẳng ra render item, và append vào cùng draw
+list với sprite — nên tilemap, sprite và particle đều rơi vào một batch đã sort duy nhất, và cả level
+chỉ tốn một, hai draw call:
+
+```cpp
+std::vector<renderer::RenderItem> items;
+layer.extract(items, &app.camera().visibleBounds());
+```
+
+Truyền vùng nhìn camera vào nghĩa là **chỉ những ô trên màn hình mới bị chạm tới**. Một bản đồ
+4096×4096 tốn đúng bằng một bản đồ 64×32.
+
+## Nạp từ Tiled
+
+Vẽ level trong [Tiled](https://www.mapeditor.org/), lưu dưới dạng `.tmj` (JSON), rồi nạp:
+
+```cpp
+renderer::Tilemap map;
+assets::loadTiledMap(map, app.assets(), app.fileSystem(), "assets/level.tmj");
+```
+
+Ảnh tileset được giải theo đường dẫn tương đối so với file bản đồ và nạp qua asset manager, nên chúng
+dùng chung cache với mọi thứ khác.
+
+### Tùy chọn import
+
+```cpp
+assets::TiledImportOptions opts{
+    .origin        = {0.0f, 0.0f},   // vị trí thế giới của góc trái trên bản đồ
+    .unitsPerPixel = 2.0f,           // art 16px trong một thế giới không phải 16px
+    .baseLayer     = 0,              // layer vẽ của tile layer đầu tiên
+};
+```
+
+Trục y của Tiled hướng **xuống**, còn của engine hướng **lên**; bộ import trải bản đồ xuống dưới tính từ
+`origin`, nên bạn không phải tự lật gì cả.
+
+### Object layer
+
+Điểm spawn, vùng kích hoạt và cánh cửa mới là thứ biến một lưới ô thành một *level*. Chúng đi vào dưới
+dạng `TiledObject`:
+
+```cpp
+opts.onBeginImport = [&] { xoaMoiThuTuLanImportTruoc(); };
+
+opts.onObject = [&](const assets::TiledObject& obj) {
+    if (obj.type != "enemy") return;                    // "class" của Tiled
+
+    const Vec2 at    = obj.bounds.center();             // không gian thế giới, góc min + kích thước
+    const f32  speed = obj.properties
+                     ? obj.properties->get("speed").asF32(1.0f)   // thiếu key -> giá trị mặc định
+                     : 1.0f;
+    spawnEnemy(app, at, speed);
+};
+
+assets::loadTiledMap(map, app.assets(), app.fileSystem(), "assets/level.tmj", opts);
+```
+
+`onBeginImport` chạy trước mọi object, ở **mỗi** lần import — kể cả hot-reload. Đó là nơi những entity
+bạn đã sinh ra từ lần import trước bị dọn đi, và bỏ qua nó chính là cách bạn có **hai** con quái mỗi
+lần lưu trong Tiled.
+
+<Callout type="warn">
+  File thiếu hoặc không hỗ trợ sẽ **báo lỗi to**, kèm thông điệp chỉ đúng cách sửa, và để bản đồ ở trạng
+  thái đã xóa sạch thay vì dựng dở dang. Cái hay cắn nhất: Tiled mặc định lưu tileset dạng `.tsx` (XML),
+  thứ mà bộ import không đọc — hãy lưu tileset dưới dạng `.tsj`.
+</Callout>
+
+Xem [Asset](/vi/learn/concepts/assets) để hot-reload bản đồ bằng `TiledWatcher`.

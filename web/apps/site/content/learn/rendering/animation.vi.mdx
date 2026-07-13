@@ -1,0 +1,66 @@
+---
+title: Animation cho sprite
+description: Clip, thư viện animation, và component phát chúng.
+---
+
+Một `AnimationClip` là một danh sách frame trên một trang texture. Clip nằm trong `AnimationLibrary` và
+được tham chiếu bằng handle, nên component phát clip chỉ là một giá trị thuần, bên trong không có con
+trỏ nào.
+
+## Dựng clip
+
+```cpp
+renderer::AnimationLibrary anims;
+
+const renderer::SpriteSheet sheet{
+    .texture       = app.loadTexture("assets/player.png"),
+    .textureWidth  = 256,
+    .textureHeight = 64,
+    .columns       = 4,
+    .rows          = 1,
+};
+
+// Frame 0..3 của sheet, 12 fps, lặp lại.
+const renderer::AnimationHandle idle = anims.addFromSheet(sheet, /*firstFrame*/ 0, /*count*/ 4);
+
+// Hoặc: toàn bộ frame của sheet, theo thứ tự.
+const renderer::AnimationHandle walk = anims.addFromSheet(sheet, /*fps*/ 12.0f, /*loop*/ true);
+```
+
+<Callout type="info">
+  Clip là **bất biến sau khi thêm**, và đó là lý do component animator chỉ cần giữ một handle trần. Nó
+  cũng có nghĩa thứ tự bạn thêm clip **chính là** danh tính của chúng: thêm đúng những clip đó theo đúng
+  thứ tự đó sẽ dựng lại mọi handle mà một scene đã lưu đang trỏ tới.
+</Callout>
+
+## Phát một clip
+
+```cpp
+app.registry().emplace<ecs::SpriteAnimator>(e, ecs::SpriteAnimator{.clip = idle});
+```
+
+System sẽ tua mọi animator và ghi frame vừa tính được lên `SpriteComp` của entity **trước khi** extract
+— nên frame bạn thấy là frame vừa tính, không bao giờ là frame của lượt trước.
+
+```cpp
+ecs::SpriteAnimator& anim = app.registry().get<ecs::SpriteAnimator>(e);
+
+anim.play(walk);        // dùng cái này để đổi clip
+anim.speed = -1.0f;     // số âm phát ngược
+anim.playing = false;   // đóng băng ở frame hiện tại
+
+if (anim.finished) { /* chốt lại ở frame cuối của một clip không lặp */ }
+```
+
+<Callout type="warn">
+  Gán thẳng vào `clip` thì `time` vẫn chạy tiếp từ chỗ clip cũ đang dở — clip mới sẽ bắt đầu từ giữa
+  chừng. `play()` reset nó về 0. Đó chính là toàn bộ lý do tồn tại của hàm này.
+</Callout>
+
+## Tự điều khiển
+
+System chỉ là một hàm thường, và bạn gọi được nó mà không cần vòng lặp của App:
+
+```cpp
+ecs::updateSpriteAnimations(registry, library, dt);
+```

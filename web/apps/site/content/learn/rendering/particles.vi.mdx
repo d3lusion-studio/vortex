@@ -1,0 +1,80 @@
+---
+title: Particle
+description: Emitter dạng pool, structure-of-arrays, không cấp phát thêm gì sau khi khởi tạo.
+---
+
+`ParticleEmitter` là **một hiệu ứng**: một pool sức chứa cố định, bố trí theo kiểu structure of arrays.
+Không có gì được cấp phát sau khi khởi tạo, particle chết bị swap-and-pop chứ không để lại lỗ, và khi
+pool đầy thì thứ bị bỏ là particle mới — không phải ngân sách frame.
+
+`ParticleWorld` sở hữu các emitter. Nó nằm trên scene, nên `app.particles()` là world của scene đang
+hoạt động.
+
+## Mô tả một hiệu ứng
+
+```cpp
+const renderer::ParticleEmitterDesc spark{
+    // Bắt buộc — batcher bind một texture cho mỗi draw. Một pixel trắng 1×1 cho bạn
+    // particle màu phẳng mà không cần ảnh nào trên đĩa.
+    .texture = app.whiteTexture(),
+
+    // Hình dạng vùng sinh, tương đối so với vị trí emitter.
+    .spawnRadius = 4.0f,          // đĩa tròn; để 0 nếu muốn sinh từ một điểm
+
+    .rate = 200.0f,               // particle mỗi giây; 0 = chỉ bắn theo burst
+
+    .lifetime  = {0.4f, 0.9f},    // một Range: min..max, gieo ngẫu nhiên cho từng particle
+    .speed     = {80.0f, 160.0f},
+    .direction = {0.0f, kTwoPi},  // radian; thu hẹp khoảng này để có tia định hướng
+    .size      = 6.0f,            // đơn vị thế giới, ở scale 1
+
+    .gravity = {0.0f, -200.0f},
+    .drag    = 1.5f,              // velocity *= 1 / (1 + drag * dt)
+
+    // Đường cong theo vòng đời, tính trên tuổi chuẩn hóa trong [0, 1].
+    .startColor = Color::fromRgb(0xFFD08A),
+    .endColor   = Color::transparent(),
+    .startScale = 1.0f,
+    .endScale   = 0.2f,
+    .scaleCurve = easing::Ease::Linear,
+
+    // Trần cứng. Pool cấp phát một lần đúng bằng con số này và không bao giờ nở ra.
+    .capacity = 2048,
+};
+
+const renderer::EmitterHandle h = app.particles().add(spark);
+```
+
+Mọi trường số đều là một `Range`, và một giá trị đơn **chính là** một range gồm một phần tử:
+`.size = 6.0f` và `.size = {6.0f, 6.0f}` là như nhau. Ngẫu nhiên hóa là thứ bạn *chọn bật* bằng cách
+viết hai số thay vì một.
+
+## Bắn particle
+
+```cpp
+renderer::ParticleEmitter* e = app.particles().get(h);
+
+e->emit(32);                  // bắn một loạt từ vị trí hiện tại của emitter
+e->emitAt({x, y}, 32);        // dời emitter, rồi bắn
+e->clear();                   // giết mọi particle còn sống, giữ nguyên pool
+```
+
+Với `rate > 0` emitter còn tự phun một dòng đều; các loạt burst cộng thêm lên trên dòng đó.
+
+## Vì sao chúng không phải entity
+
+Particle sống trong pool, không sống trong registry. Không có id entity, không tra cứu component, và
+không có lớp gián tiếp sparse-set nào cho mỗi particle — đó chính là **toàn bộ** lý do vài chục nghìn
+particle vẫn kham được.
+
+Chúng extract vào **cùng draw list** với sprite và tilemap:
+
+```cpp
+app.particles().extract(items, &app.camera().visibleBounds());
+```
+
+Nên một scene đầy sprite cộng thêm một vòi phun tia lửa vẫn là một batch đã sort duy nhất, và thường chỉ
+tốn thêm đúng một draw call so với chỉ có sprite. `update(dt, jobs)` rải phép tích phân ra job system
+khi pool đủ lớn để việc đồng bộ có lãi.
+
+`aliveParticles()` và `emitterCount()` có sẵn cho lúc bạn muốn biết mình đang thực sự trả giá bao nhiêu.

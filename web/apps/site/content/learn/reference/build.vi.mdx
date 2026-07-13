@@ -1,0 +1,70 @@
+---
+title: Tùy chọn build
+description: CMake preset, các option, và những biến môi trường mà engine đọc.
+---
+
+## Preset
+
+```bash
+cmake --preset debug            # -O0, warning là error
+cmake --preset release          # -O3
+cmake --preset relwithdebinfo   # tối ưu, có symbol — bản để profile
+
+cmake --build --preset release
+```
+
+Generator là Ninja, và `compile_commands.json` được ghi ra cho clangd.
+
+## Option của CMake
+
+| Option | Mặc định | Tác dụng |
+| --- | --- | --- |
+| `VORTEX_BUILD_EXAMPLES` | ON | Build `examples/` |
+| `VORTEX_BUILD_TOOLS` | ON | Build `tools/` (asset cooker) |
+| `VORTEX_BUILD_TESTS` | ON | Build `tests/` |
+| `VORTEX_INSTALL` | ON | Sinh quy tắc install/export |
+| `VORTEX_WARNINGS_AS_ERRORS` | OFF | `-Wall -Wextra` trở thành lỗi |
+| `VORTEX_WITH_TRACY` | OFF | Bật backend profiler Tracy |
+| `VORTEX_RHI_WITH_VULKAN` | ON | Build backend Vulkan |
+| `VORTEX_RHI_WITH_WEBGPU` | ON | Build backend WebGPU |
+| `VORTEX_RHI_BACKEND` | `Vulkan` | Backend mặc định khi `VORTEX_RHI_API` không được đặt |
+
+Phải bật ít nhất một backend; nếu không, bước configure **thất bại** thay vì tạo ra một thư viện không
+vẽ được gì.
+
+## Biến môi trường
+
+| Biến | Giá trị | Tác dụng |
+| --- | --- | --- |
+| `VORTEX_RHI_API` | `vulkan`, `webgpu` | Chọn backend lúc chạy, đè lên mặc định của CMake |
+| `VORTEX_SPRITES` | số nguyên | Số sprite trong ví dụ `sprites` |
+| `GLFW_PLATFORM` | `x11`, `wayland` | Ép nền tảng cửa sổ |
+
+## Phụ thuộc
+
+CMake tự tải về (qua `FetchContent`): stb, Dear ImGui, miniaudio, Box2D, Vulkan-Headers, VMA,
+vk-bootstrap, wgpu-native, doctest.
+
+Bạn phải tự có:
+
+| Công cụ | Cần cho |
+| --- | --- |
+| **glslc** | Luôn cần — compile GLSL sang SPIR-V (đi kèm Vulkan SDK) |
+| **Vulkan SDK** 1.3 | Backend Vulkan |
+| **glfw** 3.4 | Cửa sổ |
+| **naga** (`cargo install naga-cli`) | Backend WebGPU — transpile SPIR-V sang WGSL |
+
+## Link tới Vortex
+
+```cmake
+find_package(Vortex REQUIRED)
+
+add_executable(my_game main.cpp)
+target_link_libraries(my_game PRIVATE Vortex::vortex)
+```
+
+## Wayland
+
+Trên phiên Wayland, các ví dụ hiện **ép dùng X11/XWayland** và ghi log cho biết điều đó. Đây là giải
+pháp tạm, không phải một lựa chọn: đường swapchain Wayland native chưa xong. Đặt `GLFW_PLATFORM=wayland`
+nếu bạn muốn xem nó vỡ ở đâu.

@@ -1,0 +1,56 @@
+---
+title: Giới thiệu
+description: Vortex là gì, không là gì, và bạn có nên dùng nó không.
+---
+
+Vortex là một **game engine C++20 hướng dữ liệu, code-first**. Không có editor, không có định dạng
+project độc quyền: game của bạn là một chương trình C++ link tới một thư viện.
+
+## Hiện đã có gì
+
+- **ECS** — registry sparse-set với component lưu đóng gói liên tục. System là hàm thuần.
+- **Renderer** — sprite batching, sprite sheet và animation, tilemap import từ Tiled, particle, text
+  bitmap và một lớp UI immediate-mode. Nhánh 3D cũng đã chạy: PBR GGX, shadow map PCF, HDR bloom với
+  tonemap ACES.
+- **RHI** — lớp trừu tượng backend với hai hiện thực: Vulkan và WebGPU (wgpu-native). Không một dòng
+  code nào phía trên lớp này nhắc tới tên một graphics API.
+- **Physics** — rigid body 2D, collider, joint, raycast và sensor thông qua Box2D.
+- **Platform** — cửa sổ và input qua GLFW, cùng hệ thống action đặt tên phía trên.
+
+## Vortex *không* phải là gì
+
+- **Không phải engine xoay quanh editor.** Nếu bạn muốn kéo thả prefab vào viewport, hãy dùng Godot
+  hoặc Unity. Vortex gần với Bevy hơn: bạn viết scene bằng code.
+- **Chưa ổn định.** API còn thay đổi giữa các bản phát hành. Hãy ghim version.
+- **Không phải engine 3D-first.** 3D chạy được, nhưng 2D mới là phần hoàn chỉnh.
+
+## Đọc theo thứ tự nào
+
+Các trang này xây trên nhau, và đọc theo thứ tự là con đường ngắn nhất từ con số không tới một game
+chạy được.
+
+<Cards>
+  <Card
+    title="Bắt đầu"
+    href="/vi/learn/getting-started"
+    description="Build engine và đưa một cửa sổ lên màn hình trong mười phút."
+  />
+  <Card
+    title="App và vòng lặp game"
+    href="/vi/learn/concepts/app"
+    description="App sở hữu những gì, callback chạy khi nào, và vì sao có tới hai loại update."
+  />
+  <Card
+    title="Entity, component, system"
+    href="/vi/learn/concepts/ecs"
+    description="Registry, cách view duyệt, và vì sao system chỉ là hàm thuần."
+  />
+  <Card
+    title="Sprite và camera"
+    href="/vi/learn/rendering/sprites"
+    description="Một sprite lên màn hình ra sao, và một draw call thực sự tốn gì."
+  />
+</Cards>
+
+Nếu bạn thích đọc code hơn đọc chữ, thư mục `examples/` trong repo chính là nội dung này ở dạng chạy
+được — mọi đoạn code trong tài liệu đều lấy từ đó.

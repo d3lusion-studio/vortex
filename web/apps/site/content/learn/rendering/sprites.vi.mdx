@@ -1,0 +1,104 @@
+---
+title: Sprite và camera
+description: Một sprite lên màn hình ra sao, một draw call tốn gì, và camera 2D ánh xạ pixel thế nào.
+---
+
+Gắn một `SpriteComp` và renderer lo phần còn lại.
+
+```cpp
+const ecs::Entity e = app.scene().spawn();
+app.registry().get<ecs::Transform2D>(e).position = {0.0f, 0.0f};
+app.registry().emplace<ecs::SpriteComp>(e, ecs::SpriteComp{
+    .texture = app.loadTexture("assets/player.png"),
+    .color   = Color::white(),   // nhuộm màu texture; trắng là để nguyên
+    .size    = {64.0f, 64.0f},   // kích thước quad, trước khi transform scale nó
+    .layer   = 0,                // thứ tự vẽ; số lớn hơn nằm trên
+});
+```
+
+`color` **nhân** vào texture. Kết hợp với `whiteTexture()` — một pixel trắng đục 1×1 — bạn có ngay quad
+màu phẳng mà không cần ảnh trên đĩa, và đó chính là cách particle, UI và debug-draw hoạt động.
+
+## Gom batch
+
+Batcher gom những sprite **liên tiếp** dùng chung texture vào một draw call. Nó **không sắp xếp lại**
+sprite giữa các texture: sort là theo `layer`, và trong cùng một layer thì theo thứ tự extract.
+
+Từ đó ra một quy tắc duy nhất đáng nhớ về hiệu năng 2D:
+
+<Callout type="info">
+  Xen kẽ texture là tốn draw call. Mười sprite luân phiên giữa hai atlas là mười draw call; cũng mười
+  sprite đó nhóm theo atlas thì chỉ còn hai. Hãy đóng gói những sprite hay xuất hiện cùng nhau vào cùng
+  một atlas, và batcher lo nốt.
+</Callout>
+
+`app.drawCalls()` cho bạn biết thực tế đã tốn bao nhiêu. Ví dụ `sprites` vẽ 20.000 sprite trên ba
+texture chỉ trong **ba** draw call.
+
+## Sprite sheet
+
+`TextureRegion` là một khung nhìn lên texture — trang ảnh cộng với một rect UV. `SpriteSheet` cắt một
+lưới đều thành các region, đánh chỉ số theo hàng từ trái trên:
+
+```cpp
+const renderer::SpriteSheet sheet{
+    .texture       = app.loadTexture("assets/player.png"),
+    .textureWidth  = 256,
+    .textureHeight = 64,
+    .columns       = 4,
+    .rows          = 1,
+    // margin = viền quanh cả tấm sheet, spacing = khe giữa các ô.
+    // Để cả hai bằng 0 nếu sheet xếp khít nhau.
+};
+
+sprite.setRegion(sheet.region(2));   // set texture + uv cùng lúc
+```
+
+`sheet.region(i).sizePixels` là kích thước gốc của ô, và thường là giá trị mặc định hợp lý cho
+`SpriteComp::size`.
+
+## Camera 2D
+
+`Camera2D` là một struct thuần — không trạng thái ẩn, không ma trận phải giữ đồng bộ:
+
+```cpp
+renderer::Camera2D& cam = app.camera();
+cam.position = {0.0f, 0.0f};
+cam.zoom     = 1.0f;         // >1 là phóng to
+```
+
+`viewportWidth` và `viewportHeight` được vòng lặp ghi từ kích thước framebuffer mỗi frame, nên việc
+resize đã được xử lý sẵn. Phép chiếu là trực giao và **lấy tâm làm gốc**: tọa độ thế giới `(0, 0)` nằm
+giữa cửa sổ, và `+Y` hướng lên.
+
+### Màn hình và thế giới
+
+```cpp
+f32 mx, my;
+app.input().mousePosition(mx, my);
+const Vec2 world = cam.screenToWorld(mx, my);
+```
+
+### Culling
+
+`cam.visibleBounds()` trả về rect trong không gian thế giới mà camera nhìn thấy. Truyền nó vào extract
+và sprite ngoài màn hình bị loại bằng một phép kiểm tra AABB **trước khi** ma trận thế giới của nó kịp
+được dựng:
+
+```cpp
+ecs::extractSprites(registry, items, &cam.visibleBounds());
+```
+
+`app.visibleSprites()` cho biết bao nhiêu sprite sống sót — khoảng cách giữa con số đó và tổng số entity
+chính là phần việc mà culling đã tiết kiệm cho bạn.
+
+## Vẽ ngoài ECS
+
+`onRender` đưa thẳng batcher cho bạn, và những gì bạn vẽ ở đó được gom **chung batch** với sprite của
+scene chứ không bị flush riêng:
+
+```cpp
+app.onRender([](app::App& a, renderer::SpriteBatch& batch) {
+    batch.drawSprite(a.whiteTexture(), {0.0f, 0.0f}, {8.0f, 8.0f}, Color::red());
+});
+```

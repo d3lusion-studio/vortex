@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { Card, Section } from '@vortex/ui';
+import { Section } from '@vortex/ui';
 import { getDictionary } from '@/content/dictionary';
 import { allPosts } from '@/lib/blog';
 import { toLang } from '@/lib/i18n';
@@ -28,14 +28,20 @@ export default async function BlogIndex({ params }: Props) {
       title={dict.blog.title}
       description={dict.blog.description}
     >
-      <div className="mx-auto grid max-w-3xl gap-5">
+      <div className="divide-y divide-[var(--border-subtle)] border-y border-[var(--border-subtle)]">
         {posts.map((post) => (
-          <Link key={post.url} href={post.url}>
-            <Card className="transition-colors hover:border-accent-500/40">
-              <time className="font-mono text-xs text-accent-400">{post.data.date}</time>
-              <h3 className="mt-2 text-xl font-semibold">{post.data.title}</h3>
-              <p className="mt-2 text-sm text-[var(--text-muted)]">{post.data.description}</p>
-            </Card>
+          <Link
+            key={post.url}
+            href={post.url}
+            className="group block py-6 transition-colors hover:bg-[var(--surface-sunken)]"
+          >
+            <time className="font-mono text-[11px] text-[var(--text-muted)]">{post.data.date}</time>
+            <h3 className="mt-1.5 text-lg font-semibold tracking-tight group-hover:text-[var(--accent)]">
+              {post.data.title}
+            </h3>
+            <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-[var(--text-muted)]">
+              {post.data.description}
+            </p>
           </Link>
         ))}
       </div>

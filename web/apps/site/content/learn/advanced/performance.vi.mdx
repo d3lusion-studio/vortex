@@ -1,0 +1,61 @@
+---
+title: Hiệu năng
+description: Đo cái gì, các con số nói lên điều gì, và số ít thứ thật sự quan trọng trong 2D.
+---
+
+Bắt đầu từ những con số engine đã đưa sẵn cho bạn:
+
+```cpp
+app.fps();              // số frame mỗi giây
+app.deltaTime();        // giây, đã kẹp theo maxFrameTime
+app.drawCalls();        // số draw call của frame vừa rồi
+app.visibleSprites();   // số sprite sống sót qua culling
+```
+
+Khoảng cách giữa **tổng số entity** và `visibleSprites()` là phần culling tiết kiệm cho bạn. Khoảng cách
+giữa `visibleSprites()` và `drawCalls()` là phần batching tiết kiệm cho bạn.
+
+## Ba thứ thật sự quan trọng trong 2D
+
+**1. Draw call.** Batcher gom những sprite **liên tiếp** dùng chung texture. Nó không sắp xếp lại giữa
+các texture, nên cứ xen kẽ texture là tốn thêm một draw call mỗi lần đổi. Mười sprite luân phiên giữa
+hai atlas là mười draw call; cũng mười sprite đó sắp theo atlas thì còn hai.
+
+Cách sửa không nằm ở code, mà ở **art**: đóng gói những sprite hay xuất hiện cùng nhau vào cùng một atlas.
+
+**2. Culling.** Truyền vùng nhìn của camera vào extract, và một sprite ngoài màn hình chỉ tốn một phép
+kiểm tra AABB thay vì một phép nhân ma trận 4×4:
+
+```cpp
+ecs::extractSprites(registry, items, &camera.visibleBounds());
+```
+
+Tilemap cull theo đúng cách đó, và vì thế một bản đồ 4096×4096 tốn đúng bằng một bản đồ 64×32.
+
+**3. Công việc nằm ở đâu.** Trong một scene 2D lớn, chính **extract và dựng ma trận** mới là thứ chiếm
+phần lớn thời gian — không phải GPU. Nếu `visibleSprites()` đang ở mức hàng nghìn mà frame vẫn chậm, đó
+là nơi cần nhìn, và `parallelExtract` là cái công tắc dành cho nó.
+
+## Profiling
+
+Build kèm Tracy để có một dòng thời gian thật thay vì ngồi đoán:
+
+```bash
+cmake --preset release -DVORTEX_WITH_TRACY=ON
+```
+
+Các zone của chính engine (`app.update`, `app.extract`, `batch.upload`, `app.fixedUpdate`) đã được gắn
+sẵn. Thêm zone của bạn bằng `VORTEX_PROFILE_ZONE("tên")`.
+
+<Callout type="warn">
+  Hãy đo trên bản **release**. Con số của bản debug không phải là "sự thật chạy chậm hơn"; nó là một
+  **hình dạng khác hẳn** — kiểu duyệt mảng đóng gói của ECS đúng là loại code mà trình tối ưu biến đổi
+  tới mức không nhận ra, và profiling nó khi chưa tối ưu sẽ khiến bạn đi săn nhầm con mồi.
+</Callout>
+
+## Những thứ **không** phải vấn đề
+
+- **`view()` copy một vector mỗi lần gọi.** Đúng là có, và nó rẻ so với công việc mà system làm. Đừng gọi
+  nó trong vòng lặp lồng bên trong thì nó sẽ không bao giờ xuất hiện trên profile.
+- **Entity không chậm.** Sinh một entity là tái dùng một ô, không phải một lần cấp phát.
+- **Particle không phải entity.** Vài chục nghìn particle không tạo ra một chút lưu lượng registry nào.

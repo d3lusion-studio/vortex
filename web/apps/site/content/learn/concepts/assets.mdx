@@ -1,0 +1,75 @@
+---
+title: Assets
+description: Loading textures, the cache, and the deferred destruction that keeps the GPU honest.
+---
+
+`AssetManager` turns a path into a GPU resource, once. Ask for the same path twice and you get the
+same texture back — the cache is by path, so nothing is uploaded to the GPU twice.
+
+```cpp
+// Shortest form: load, cache, resolve to a GPU handle, ready to put in a SpriteComp.
+rhi::TextureHandle tex = app.loadTexture("assets/player.png");
+```
+
+The two-step form, when you want the CPU-side asset as well:
+
+```cpp
+assets::AssetManager& am = app.assets();
+
+assets::TextureHandle    handle = am.loadTexture("assets/player.png");
+const assets::TextureAsset* meta = am.get(handle);        // width, height, channels
+rhi::TextureHandle        gpu    = am.gpuTexture(handle); // what the renderer wants
+```
+
+There are two handle types on purpose. `assets::TextureHandle` names *the asset*; `rhi::TextureHandle`
+names *the GPU object*. Keeping them apart is what makes saving a scene possible: `pathOf()` maps a
+GPU handle back to the path it came from, which is what gets written to the file.
+
+## Unloading
+
+```cpp
+am.unload(handle);
+```
+
+The GPU object is **not** destroyed immediately. It is queued, and freed a few frames later, once no
+in-flight frame can still be referencing it. Destroying a texture the GPU is currently sampling is a
+use-after-free that a validation layer will catch and a release build will not — so the manager
+simply never does it.
+
+This is also why `beginFrame()` exists on the manager and is called by the loop: it is where those
+deferred destructions are retired.
+
+## Tiled maps
+
+`.tmj` files (Tiled's JSON format) load straight into a `Tilemap`, with the tileset images resolved
+relative to the map file:
+
+```cpp
+renderer::Tilemap map;
+assets::loadTiledMap(map, app.assets(), app.fileSystem(), "assets/level.tmj");
+```
+
+Objects placed in Tiled come through as `TiledObject`, with typed property lookups that fall back to
+a default, so a level that has not set a field still loads. `TiledImportOptions::onObject` is called
+once per object during the import — that is where you turn an object layer into entities.
+
+### Hot reload
+
+`TiledWatcher` re-imports the map when the file changes on disk:
+
+```cpp
+assets::TiledWatcher watcher{"assets/level.tmj"};
+watcher.load(map, app.assets(), app.fileSystem());
+
+app.onUpdate([&](app::App& a, f32) {
+    watcher.poll(map, a.assets(), a.fileSystem());   // re-imports only if it changed
+});
+```
+
+A re-import is a **full** one, deliberately: a tileset image that changed shape would otherwise
+leave the map indexing into a texture that no longer matches it.
+
+## Where files come from
+
+Paths go through `pf::IFileSystem`, not `std::fstream` directly. That indirection is what will let
+an archive or a virtual filesystem slot in later without touching a single call site.

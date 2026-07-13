@@ -1,0 +1,75 @@
+---
+title: Scene và lưu trữ
+description: Nhiều thế giới, chuyển qua lại an toàn, và lưu một scene xuống đĩa.
+---
+
+Một `Scene` sở hữu một registry, một camera, một particle world và một danh sách system. Game chỉ có
+một thế giới thì không bao giờ cần biết `SceneManager` tồn tại — `app.scene()` chính là scene đang hoạt
+động.
+
+```cpp
+ecs::Scene&    scene = app.scene();
+ecs::Registry& reg   = app.registry();     // == scene.registry()
+renderer::Camera2D& cam = app.camera();    // == scene.camera
+```
+
+## Nhiều scene
+
+```cpp
+app.scenes().create("menu");
+app.scenes().create("level1");
+
+app.scenes().requestSwitch("level1");   // xếp hàng, không đổi ngay
+```
+
+Scene được giữ qua con trỏ, nên một `Scene&` bạn đã đưa cho code gameplay vẫn hợp lệ khi có scene khác
+được tạo hay bị hủy. `destroy()` từ chối xóa scene đang hoạt động — hãy chuyển đi trước, nếu không vòng
+lặp sẽ chẳng còn gì để chạy.
+
+<Callout type="warn">
+  Việc chuyển scene được **xếp hàng** và chỉ áp dụng ở đầu frame kế tiếp, trước khi bất cứ thứ gì đọc
+  thế giới. Đây là cách duy nhất an toàn: một system chuyển scene ngay giữa update sẽ rút registry ra
+  khỏi chân mọi system đứng sau nó — kể cả chính nó.
+</Callout>
+
+Mỗi scene có physics world riêng, tạo ra ở lần đầu `app.physics()` được gọi khi nó đang hoạt động.
+Chúng không bao giờ dùng chung: hai registry cấp cùng một chỉ số entity cho hai entity hoàn toàn khác
+nhau, nên một solver dùng chung cho cả hai sẽ lẫn lộn body.
+
+## Lưu và tải
+
+```cpp
+app.saveScene("save.scene.json");   // false nếu ghi lỗi
+app.loadScene("save.scene.json");   // false nếu thiếu file hoặc file hỏng
+```
+
+Texture được lưu thành **đường dẫn mà nó đã được nạp từ đó**, và khi tải thì được giải lại qua
+`AssetManager` — một scene đã lưu trỏ tới **asset**, không trỏ tới GPU handle, thứ vốn vô nghĩa trong
+một tiến trình mới.
+
+<Callout type="warn">
+  `loadScene` thất bại sẽ để lại scene đang hoạt động **rỗng**, chứ không phải nguyên vẹn. Hãy kiểm tra
+  giá trị trả về trước khi cho rằng vẫn còn một thế giới ở đó.
+
+  Một texture được tạo thẳng trên device thay vì qua `assets()` sẽ không có đường dẫn, và khi tải lại
+  sẽ trống. Bất cứ thứ gì phải sống sót qua một lần lưu thì hãy nạp bằng `app.loadTexture()`.
+</Callout>
+
+## Prefab
+
+Cùng bộ máy đó dùng để lưu **một entity và toàn bộ con cháu của nó** như một khuôn mẫu tái sử dụng. Các
+hàm này làm việc với `json::Value`, không phải file — việc đọc ghi file là của bạn, và chính điều đó cho
+phép một prefab nằm bên trong một file level, một archive, hay một gói tin mạng, chứ không chỉ trên đĩa.
+
+```cpp
+const ecs::SerializeContext& ctx = app.serializeContext();
+
+const json::Value prefab = ecs::savePrefab(app.scene(), enemy, ctx);
+
+// Đóng dấu tại một vị trí thế giới. Vị trí gốc của chính prefab được coi là độ lệch
+// so với `at`, nên một prefab dựng quanh gốc tọa độ sẽ đáp xuống đúng chỗ bạn muốn.
+ecs::Entity spawned = ecs::instantiate(app.scene(), prefab, {120.0f, 0.0f}, ctx);
+```
+
+Liên kết cha–con được ghi thành **chỉ số trong danh sách entity**, không phải id, nên một prefab vẫn
+đúng kể cả khi lần chạy sau id được cấp phát khác đi.

@@ -1,0 +1,42 @@
+---
+title: Audio
+description: Loading and playing sounds — and why the engine may hand you nothing at all.
+---
+
+The short form covers most of what a game needs:
+
+```cpp
+app.playSound("assets/jump.wav");
+app.playSound("assets/music.ogg", /*loop*/ true);
+```
+
+The sound is loaded on first use and reused afterwards, keyed by path.
+
+## The engine
+
+For anything more — stopping a loop, per-sound volume — take the engine:
+
+```cpp
+audio::IAudioEngine* engine = app.audio();
+if (!engine) return;   // see below
+
+const audio::SoundHandle music = engine->load("assets/music.ogg");
+
+engine->play(music, /*loop*/ true);
+engine->setVolume(music, 0.4f);
+engine->setMasterVolume(0.8f);
+engine->stop(music);
+engine->unload(music);
+```
+
+<Callout type="warn">
+  **`app.audio()` can return `nullptr`, and that is not an error.** A machine with no audio device —
+  a CI runner, a headless server, a container — will not have one, and the engine's answer is to keep
+  running silently rather than refuse to start.
+
+  Check the pointer. `playSound()` already does, and is simply a no-op with no device, which is why
+  it is the safer call.
+</Callout>
+
+The device is opened on the **first** call to `audio()` or `playSound()`, and a failed open is not
+retried every frame. A game that makes no sound never opens a device at all.

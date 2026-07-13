@@ -4,6 +4,7 @@ import type { Dictionary } from '@/content/dictionary';
 import type { Lang } from '@/lib/i18n';
 import { SITE } from '@/lib/site-config';
 import { LanguageSwitcher } from './language-switcher';
+import { Wordmark } from './wordmark';
 
 /** Prefixes a path with the locale. English is prefix-free (it is the default locale). */
 export function localePath(lang: Lang, path: string): string {
@@ -12,40 +13,42 @@ export function localePath(lang: Lang, path: string): string {
 
 export function SiteHeader({ lang, dict }: { lang: Lang; dict: Dictionary }) {
   const nav = [
-    { href: '/docs', label: dict.nav.docs },
+    { href: '/learn', label: dict.nav.learn },
     { href: '/blog', label: dict.nav.blog },
     { href: '/assets', label: dict.nav.assets },
   ];
 
   return (
-    <header className="sticky top-0 z-50 border-b border-[var(--border-subtle)] bg-[var(--surface)]/80 backdrop-blur-md">
-      <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-8 px-6">
-        <Link href={localePath(lang, '/')} className="font-mono text-sm font-semibold tracking-tight">
-          <span className="text-accent-400">▲</span> Vortex
+    <header className="sticky top-0 z-50 border-b border-[var(--border-subtle)] bg-[var(--surface)]/85 backdrop-blur">
+      <div className="mx-auto flex h-14 w-full max-w-5xl items-center gap-8 px-6">
+        <Link href={localePath(lang, '/')} aria-label="Vortex">
+          <Wordmark />
         </Link>
+
         <nav className="hidden gap-6 text-sm text-[var(--text-muted)] md:flex">
           {nav.map((item) => (
             <Link
               key={item.href}
               href={localePath(lang, item.href)}
-              className="hover:text-[var(--text-primary)]"
+              className="transition-colors hover:text-[var(--text-primary)]"
             >
               {item.label}
             </Link>
           ))}
         </nav>
-        <div className="ml-auto flex items-center gap-2">
+
+        <div className="ml-auto flex items-center gap-3">
           <LanguageSwitcher current={lang} label={dict.nav.language} />
-          <ButtonLink
+          <span className="hidden h-4 w-px bg-[var(--border-subtle)] sm:block" />
+          <Link
             href={SITE.repoUrl}
-            variant="ghost"
-            size="sm"
             target="_blank"
             rel="noreferrer"
+            className="hidden text-sm text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] sm:block"
           >
             {dict.nav.github}
-          </ButtonLink>
-          <ButtonLink href={localePath(lang, '/docs/getting-started')} size="sm">
+          </Link>
+          <ButtonLink href={localePath(lang, '/learn/getting-started')} size="sm">
             {dict.nav.getStarted}
           </ButtonLink>
         </div>

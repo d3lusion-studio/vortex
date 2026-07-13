@@ -1,65 +1,108 @@
 /*
  * Vortex design tokens.
  *
- * Single source of truth for colour/type/spacing across every web app (site, playground,
- * store, dashboard). Apps import this once; they never hardcode a hex value.
- * Tailwind v4 reads @theme and generates the corresponding utilities (bg-surface, text-accent, ...).
+ * Single source of truth for colour/type/spacing across every web app. Apps import this once;
+ * they never hardcode a hex value.
+ *
+ * The look is "pixel, restrained": square corners, hard 1px borders, a faint pixel grid, and a
+ * pixel typeface used only for the wordmark and section labels. Body copy stays in a real text
+ * face — a pixel font at paragraph size is a readability tax paid by every visitor, and this is a
+ * documentation site before it is a mood board. No gradients, no glows, no drop shadows: an
+ * engine's site should read like a schematic, not a splash screen.
  */
 
 @theme {
-  /* Brand: a vortex is motion + energy -> cyan core bleeding into violet. */
+  /* One accent, used sparingly. A second one would be decoration, not information. */
   --color-accent-50: #ecfeff;
   --color-accent-100: #cffafe;
+  --color-accent-200: #a5f3fc;
   --color-accent-300: #67e8f9;
   --color-accent-400: #22d3ee;
   --color-accent-500: #06b6d4;
   --color-accent-600: #0891b2;
   --color-accent-700: #0e7490;
+  --color-accent-800: #155e75;
 
-  --color-violet-400: #a78bfa;
-  --color-violet-500: #8b5cf6;
-  --color-violet-600: #7c3aed;
+  /* Warm-tinted neutrals: pure grey reads clinical, a hint of warmth reads considered. */
+  --color-ink-950: #101012;
+  --color-ink-900: #18181b;
+  --color-ink-800: #27272a;
+  --color-ink-700: #3f3f46;
+  --color-ink-600: #52525b;
+  --color-ink-500: #71717a;
+  --color-ink-400: #a1a1aa;
+  --color-ink-300: #d4d4d8;
+  --color-ink-200: #e4e4e7;
+  --color-ink-100: #f4f4f5;
+  --color-ink-50: #fafaf9;
 
-  /* Neutrals tuned for a dark-first developer product. */
-  --color-ink-950: #05070d;
-  --color-ink-900: #0a0e17;
-  --color-ink-850: #0f1420;
-  --color-ink-800: #151b29;
-  --color-ink-700: #1f2839;
-  --color-ink-600: #334155;
-  --color-ink-500: #64748b;
-  --color-ink-300: #94a3b8;
-  --color-ink-200: #cbd5e1;
-  --color-ink-100: #e2e8f0;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-code), ui-monospace, 'SF Mono', Menlo, monospace;
+  /* Wordmark and section labels only. Never body copy. */
+  --font-pixel: var(--font-pixel-display), var(--font-mono-code), monospace;
 
-  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-
-  --radius-card: 0.875rem;
-
-  --shadow-glow: 0 0 0 1px rgb(6 182 212 / 0.25), 0 8px 40px -8px rgb(6 182 212 / 0.35);
+  /* Square by default. Pixels do not have rounded corners. */
+  --radius-card: 0px;
 }
 
 /*
  * Semantic layer. Components reference these, never the raw ramp above, so a re-theme is a
  * one-file change.
+ *
+ * Light is the default: the engine's own docs are read for hours, and a paper-white page is the
+ * gentler place to do that.
  */
 :root {
-  --surface: var(--color-ink-950);
-  --surface-raised: var(--color-ink-900);
-  --surface-overlay: var(--color-ink-850);
-  --border-subtle: rgb(255 255 255 / 0.08);
-  --text-primary: var(--color-ink-100);
-  --text-muted: var(--color-ink-300);
+  --surface: #fcfcfb;
+  --surface-raised: #ffffff;
+  --surface-sunken: var(--color-ink-100);
+
+  --border-subtle: var(--color-ink-200);
+  --border-strong: var(--color-ink-300);
+
+  --text-primary: var(--color-ink-900);
+  --text-muted: var(--color-ink-500);
+
+  --accent: var(--color-accent-700);
+  --accent-contrast: #ffffff;
+
+  /* The pixel grid in the page background. Kept just above invisible on purpose. */
+  --grid-line: rgb(0 0 0 / 0.045);
+  --grid-size: 8px;
 }
 
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme='dark']) {
-    --surface: #ffffff;
-    --surface-raised: #f8fafc;
-    --surface-overlay: #f1f5f9;
-    --border-subtle: rgb(2 6 23 / 0.08);
-    --text-primary: #0f172a;
-    --text-muted: #475569;
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --surface: var(--color-ink-950);
+    --surface-raised: var(--color-ink-900);
+    --surface-sunken: #0b0b0d;
+
+    --border-subtle: var(--color-ink-800);
+    --border-strong: var(--color-ink-700);
+
+    --text-primary: var(--color-ink-100);
+    --text-muted: var(--color-ink-400);
+
+    --accent: var(--color-accent-400);
+    --accent-contrast: var(--color-ink-950);
+
+    --grid-line: rgb(255 255 255 / 0.05);
   }
+}
+
+:root[data-theme='dark'] {
+  --surface: var(--color-ink-950);
+  --surface-raised: var(--color-ink-900);
+  --surface-sunken: #0b0b0d;
+
+  --border-subtle: var(--color-ink-800);
+  --border-strong: var(--color-ink-700);
+
+  --text-primary: var(--color-ink-100);
+  --text-muted: var(--color-ink-400);
+
+  --accent: var(--color-accent-400);
+  --accent-contrast: var(--color-ink-950);
+
+  --grid-line: rgb(255 255 255 / 0.05);
 }

@@ -1,0 +1,120 @@
+---
+title: Entity, component, system
+description: Registry sparse-set, cách view duyệt, và vì sao system chỉ là hàm thuần.
+---
+
+**Entity** là một id. **Component** là dữ liệu thuần gắn vào id đó. **System** là một hàm duyệt qua
+component. Không có lớp cha để kế thừa, không có `Update()` ảo, và không có component nào ôm hành vi.
+
+## Sinh entity
+
+```cpp
+const ecs::Entity e = app.scene().spawn();   // đã có sẵn Transform2D
+
+app.registry().get<ecs::Transform2D>(e).position = {0.0f, 4.0f};
+app.registry().emplace<ecs::SpriteComp>(e, ecs::SpriteComp{
+    .texture = app.loadTexture("assets/player.png"),
+    .color   = Color::white(),
+    .size    = {1.0f, 1.0f},
+});
+```
+
+`Scene::spawn()` gắn sẵn `Transform2D` cho mọi entity, vì một entity không có vị trí gần như không bao
+giờ là thứ bạn thật sự muốn.
+
+## Registry
+
+```cpp
+ecs::Registry& reg = app.registry();
+
+T&   emplace<T>(e, args...);   // dựng tại chỗ
+T*   tryGet<T>(e);             // nullptr nếu không có
+T&   get<T>(e);                // assert là phải có
+bool has<T>(e);
+void remove<T>(e);
+
+bool alive(e);
+void destroy(e);
+```
+
+Id của entity được tái sử dụng kèm một bộ đếm generation, nên một handle trỏ tới entity đã bị hủy sẽ bị
+**phát hiện**, thay vì lặng lẽ trỏ nhầm sang bất kỳ entity nào vừa được sinh vào đúng ô đó.
+
+## View
+
+Duyệt bằng callback, không phải cặp iterator:
+
+```cpp
+reg.view<physics::RigidBody2D, ecs::Transform2D>(
+    [dt](ecs::Entity e, physics::RigidBody2D& body, ecs::Transform2D& tf) {
+        body.velocity *= 1.0f - 0.5f * dt;
+        tf.position   += body.velocity * dt;
+    });
+```
+
+View chạy trên pool của component **đầu tiên** rồi tra cứu những cái còn lại — nên hãy đặt component
+hiếm nhất lên trước: view `<Player, Transform2D>` ghé thăm đúng một entity, còn view
+`<Transform2D, Player>` ghé thăm **mọi** entity rồi loại hết chỉ chừa một.
+
+<Callout type="info">
+  View an toàn trước thay đổi cấu trúc: một system có thể sinh entity, hủy entity, thêm hoặc bớt
+  component ngay trong lúc duyệt mà không làm hỏng vòng lặp. Cái giá của điều đó là nó duyệt trên một
+  **bản sao (snapshot)** danh sách entity của pool dẫn đầu — một lần copy vector cho mỗi lần gọi view.
+  Rẻ so với công việc mà system làm, nhưng không miễn phí, nên đừng gọi `view()` trong vòng lặp lồng
+  bên trong.
+</Callout>
+
+## Vì sao lại là sparse set
+
+Component nằm trong các mảng đóng gói liên tục. Mọi entity có `SpriteComp` đều nằm sát nhau trong bộ
+nhớ, không lỗ hổng, không đuổi theo con trỏ — nên một system chạm tới mười nghìn cái sẽ đi qua một khối
+liền mạch thay vì nhảy lung tung trên heap. Đó là **toàn bộ** lập luận về hiệu năng của ECS, và cũng là
+lý do việc xóa một component sẽ **hoán đổi phần tử cuối vào chỗ trống** thay vì để lại một lỗ.
+
+Hệ quả bạn phải nhớ: **thứ tự component không ổn định.** Đừng bao giờ lưu một chỉ số vào pool, và đừng
+giả định hai system ghé thăm entity theo cùng một thứ tự.
+
+## Component có sẵn
+
+| Component | Công dụng |
+| --- | --- |
+| `Transform2D` | `position`, `rotation` (radian, ngược chiều kim đồng hồ), `scale` |
+| `WorldTransform2D` | Do hệ phân cấp dựng ra mỗi frame; đừng ghi vào nó |
+| `Parent` | Gắn entity vào một entity khác; con thừa hưởng transform của cha |
+| `SpriteComp` | `texture`, `color`, `size`, rect uv, layer vẽ |
+| `SpriteAnimator` | Phát một clip lên `SpriteComp` mỗi frame |
+| `Velocity` | Chỉ là `Vec2`, cho gameplay không cần solver |
+| `Transform3D` | `position`, `rotation` (quaternion), `scale` |
+| `MeshComp` | `mesh`, `albedo`, `metallic`, `roughness` |
+
+## System
+
+System là bất kỳ hàm nào chạy trên registry. Đăng ký nó vào scene và vòng lặp sẽ chạy nó trong `update`:
+
+```cpp
+void applyDrag(ecs::Registry& reg, f32 dt);
+
+app.scene().addSystem([](ecs::Registry& reg, f32 dt) { applyDrag(reg, dt); });
+```
+
+Các system của chính engine cũng chỉ là hàm thường với đúng hình dạng đó — `updateTransforms`,
+`updateSpriteAnimations`, `extractSprites`. Chúng không có đặc quyền gì cả, và bạn có thể tự gọi chúng
+nếu muốn tự điều khiển frame.
+
+## Extract
+
+Việc vẽ **không** duyệt registry. Một pass riêng sẽ **extract** ra một mảng phẳng `RenderItem`, rồi
+renderer sort và gom batch trên mảng đó:
+
+```cpp
+std::vector<renderer::RenderItem> items;
+ecs::extractSprites(registry, items, &camera.visibleBounds());
+```
+
+Truyền vùng nhìn của camera vào là loại bỏ sprite ngoài màn hình bằng một phép kiểm tra AABB **trước
+khi** ma trận thế giới của nó được dựng — một sprite bị loại tốn một phép so sánh, không phải một phép
+nhân ma trận 4×4. Mọi hàm `extract*` đều **append**, và chính điều đó cho phép tilemap, sprite và
+particle cùng rơi vào một batch đã sort duy nhất. Người gọi là người xóa.
+
+`extractSpritesParallel` rải cùng khối lượng công việc đó ra job system; `AppConfig::parallelExtract`
+chuyển vòng lặp có sẵn sang dùng nó.

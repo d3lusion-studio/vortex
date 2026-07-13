@@ -1,0 +1,90 @@
+---
+title: Text and UI
+description: Bitmap fonts, drawing strings, and an immediate-mode UI with no retained tree.
+---
+
+## Text
+
+A `Font` is a texture atlas of glyphs plus their metrics. Text draws into the ordinary sprite batch,
+so it is batched with everything else and costs no separate pass.
+
+```cpp
+// TTF, rasterised to an atlas at the pixel height you ask for. Null if the file is missing.
+std::unique_ptr<text::Font> font =
+    text::Font::loadFromFile(app.device(), app.fileSystem(), "assets/inter.ttf", 32.0f);
+
+app.onRender([&](app::App& a, renderer::SpriteBatch& batch) {
+    text::drawText(batch, *font, "Score: 1200", /*topLeft*/ {-600.0f, 340.0f});
+});
+```
+
+`font->measure("...")` gives you the size the string will occupy, which is what you need to centre it,
+right-align it, or size a panel behind it.
+
+## UI
+
+The UI is **immediate mode**: there is no widget tree, no retained state, and nothing to keep in sync
+with your game. You call `button()` every frame, and it returns whether it was clicked *this* frame.
+
+```cpp
+ui::UI gui{app.device()};   // owns a 1×1 white pixel for its fills
+
+app.onRender([&](app::App& a, renderer::SpriteBatch& batch) {
+    f32 mx, my;
+    a.input().mousePosition(mx, my);
+
+    const ui::InputState in{
+        .mouse    = a.camera().screenToWorld(mx, my),
+        .down     = a.input().isMouseDown(pf::MouseButton::Left),
+        .pressed  = a.input().isMousePressed(pf::MouseButton::Left),
+        .released = a.input().isMouseReleased(pf::MouseButton::Left),
+    };
+
+    gui.begin(batch, *font, in);
+
+    gui.panel({0.0f, 0.0f}, {300.0f, 200.0f});
+    gui.label({0.0f, 60.0f}, "Paused");
+
+    if (gui.button({0.0f, 0.0f}, {180.0f, 40.0f}, "Resume")) resume();
+    if (gui.button({0.0f, -50.0f}, {180.0f, 40.0f}, "Quit"))  a.quit();
+
+    gui.end();
+});
+```
+
+Widgets are positioned by **centre**, not by top-left corner — the same convention as sprites, so a
+UI element and a sprite at the same coordinates land in the same place.
+
+### Columns
+
+Laying widgets out by hand gets old immediately. `beginColumn` stacks them for you:
+
+```cpp
+gui.beginColumn(/*topCenter*/ {0.0f, 100.0f}, /*widgetSize*/ {180.0f, 40.0f}, /*spacing*/ 10.0f);
+gui.label("Paused");
+if (gui.button("Resume")) resume();
+if (gui.button("Quit"))   app.quit();
+```
+
+The column runs until the next `beginColumn` or `end()` — there is nothing to close.
+
+### Styling
+
+`gui.style` is a plain struct: `panel`, `button`, `hovered`, `active`, `text`, plus `textScale` and
+`baseLayer`. Assign to it and every widget after that line uses the new values. There is no theme
+system, because there is no widget tree for a theme to walk.
+
+`baseLayer` defaults to 1000, which is what puts the UI on top of game sprites without you thinking
+about it.
+
+<Callout type="warn">
+  Widgets are identified by **call order**, not by an id you pass. Call the same widgets in the same
+  sequence every frame — a button that only appears on some frames shifts the identity of every
+  widget after it, and hover and click state follow the shift.
+</Callout>
+
+<Callout type="info">
+  The mouse position handed to `InputState` is in **world space**, not screen space. Converting it
+  through the camera is what lets the UI sit in the world (a health bar over an enemy) as easily as
+  on the screen.
+</Callout>

@@ -1,0 +1,56 @@
+---
+title: Introduction
+description: What Vortex is, what it is not, and whether you should use it.
+---
+
+Vortex is a **code-first, data-oriented C++20 game engine**. There is no editor and no
+proprietary project format: your game is a C++ program that links a library.
+
+## What you get today
+
+- **ECS** — a sparse-set registry with packed component storage. Systems are plain functions.
+- **Renderer** — sprite batching, sprite sheets and animation, tilemaps with Tiled import,
+  particles, bitmap text and an immediate-mode UI. The 3D path is live too: GGX PBR, PCF shadow
+  maps, and HDR bloom with ACES tonemapping.
+- **RHI** — a backend seam with two implementations, Vulkan and WebGPU (wgpu-native). Nothing
+  above the seam names a graphics API.
+- **Physics** — 2D rigid bodies, colliders, joints, raycasts and sensors via Box2D.
+- **Platform** — windowing and input through GLFW, with named actions on top.
+
+## What Vortex is not
+
+- **Not an editor-driven engine.** If you want to drag a prefab into a viewport, use Godot or
+  Unity. Vortex is closer to Bevy: you write the scene in code.
+- **Not stable yet.** The API changes between releases. Pin a version.
+- **Not a 3D-first engine.** 3D works, but 2D is where the engine is complete.
+
+## How to read this
+
+These pages build on each other, and in order they are the shortest path from nothing to a running
+game.
+
+<Cards>
+  <Card
+    title="Getting started"
+    href="/learn/getting-started"
+    description="Build the engine and get a window on screen in ten minutes."
+  />
+  <Card
+    title="App and the game loop"
+    href="/learn/concepts/app"
+    description="What App owns, when your callbacks run, and why there are two kinds of update."
+  />
+  <Card
+    title="Entities, components, systems"
+    href="/learn/concepts/ecs"
+    description="The registry, how views iterate, and why systems are plain functions."
+  />
+  <Card
+    title="Sprites and the camera"
+    href="/learn/rendering/sprites"
+    description="How a sprite gets on screen, and what a draw call actually costs."
+  />
+</Cards>
+
+If you would rather read code than prose, `examples/` in the repository is the same material in
+executable form — every snippet in these pages is lifted from it.

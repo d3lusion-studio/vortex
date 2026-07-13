@@ -1,0 +1,120 @@
+---
+title: Physics
+description: Bodies, colliders, joints, queries and contacts — Box2D behind ECS components.
+---
+
+Ask for `app.physics()` and the world for the active scene is created. From that point the loop steps
+it inside every fixed update, **before** `onFixedUpdate` runs — so your callback reads transforms the
+solver has already settled this step, not last step's.
+
+A scene that never asks pays nothing.
+
+## A body
+
+```cpp
+#include "vortex/physics/components.hpp"
+
+const ecs::Entity e = app.scene().spawn();
+app.registry().get<ecs::Transform2D>(e).position = {0.0f, 200.0f};
+
+app.registry().emplace<physics::RigidBody2D>(e, physics::RigidBody2D{
+    .type        = physics::BodyType::Dynamic,
+    .density     = 1.0f,
+    .friction    = 0.3f,
+    .restitution = 0.4f,     // bounciness, [0, 1]
+});
+app.registry().emplace<physics::BoxCollider2D>(e, physics::BoxCollider2D{
+    .halfExtents = {32.0f, 32.0f},
+});
+```
+
+The collider decides the shape; the sprite just draws it. `CircleCollider2D` is the other one.
+
+<Callout type="warn">
+  `RigidBody2D`'s fields are read **once**, when the world first sees the entity. Editing them
+  afterwards does not retune the body. Anything that has to change at runtime goes through a
+  `PhysicsWorld` setter — `setLinearVelocity`, `setTransform`, `setEnabled`, and so on.
+</Callout>
+
+### Body types
+
+| Type | Moves | Collides with |
+| --- | --- | --- |
+| `Static` | Never | Dynamic |
+| `Kinematic` | Only if you move it; ignores forces | Dynamic |
+| `Dynamic` | Simulated | Everything |
+
+## Metres, not pixels
+
+The solver works in metres, so `gravity` is m/s². `AppConfig::pixelsPerMeter` bridges the two: at the
+default of 100, a 100-pixel sprite is a 1-metre body.
+
+This matters more than it sounds. Box2D is tuned for objects between roughly 0.1 m and 10 m. A sprite
+treated as a 64-metre body will feel like it is falling through syrup, and no amount of tweaking
+gravity will fix it — fix the scale instead.
+
+## Forces and velocity
+
+```cpp
+physics::PhysicsWorld& world = app.physics();
+
+world.applyLinearImpulse(e, {0.0f, 400.0f});   // an instant kick, e.g. a jump
+world.applyForce(e, {200.0f, 0.0f});           // sustained, over the step
+world.applyTorque(e, 5.0f);
+
+world.setLinearVelocity(e, {120.0f, 0.0f});    // overrides the solver outright
+world.setTransform(e, {0.0f, 0.0f}, 0.0f);     // teleport
+world.setEnabled(e, false);                    // out of the simulation entirely
+
+const Vec2 v = world.linearVelocity(e);
+```
+
+Impulses and forces belong in `onFixedUpdate`. Applied in `onUpdate` they are scaled by a frame time
+that varies, which makes a jump higher on a fast machine.
+
+## Queries
+
+These read the broadphase and step nothing, so they are safe to call anywhere:
+
+```cpp
+const physics::RaycastHit hit = world.raycast(from, to);
+if (hit.hit()) {
+    // hit.entity, hit.point, hit.normal
+}
+
+const ecs::Entity clicked = world.pointQuery(app.camera().screenToWorld(mx, my));
+const std::vector<ecs::Entity> inArea = world.overlapRect(area);
+```
+
+`pointQuery` is the "what did I just click on" call.
+
+## Sensors
+
+A collider with `isSensor = true` reports overlaps but does not push anything. Trigger zones, pickup
+radii, checkpoints.
+
+## Contacts
+
+```cpp
+world.setContactBegin([](ecs::Entity a, ecs::Entity b) { /* touched */ });
+world.setContactEnd  ([](ecs::Entity a, ecs::Entity b) { /* separated */ });
+```
+
+<Callout type="warn">
+  These fire **during** the step. Do not spawn or destroy entities inside them — queue the intent and
+  act on it after the step returns. Destroying a body the solver is mid-way through resolving is a
+  crash, and the crash will not point at your callback.
+</Callout>
+
+## Joints
+
+Both bodies must already exist in the world, which means the step that brought them in must have
+happened. Create a joint the frame **after** you spawn its entities, not in the same breath.
+
+```cpp
+// A rigid rod. Raise `hertz` above 0 to make it springy.
+world.createDistanceJoint(a, b, /*length*/ 100.0f, /*hertz*/ 0.0f, /*damping*/ 0.0f);
+
+// A hinge: pinned at one world point, free to rotate about it.
+world.createRevoluteJoint(a, b, anchorWorld);
+```

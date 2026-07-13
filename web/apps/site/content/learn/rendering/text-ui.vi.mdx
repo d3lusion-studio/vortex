@@ -1,0 +1,90 @@
+---
+title: Text và UI
+description: Font bitmap, vẽ chuỗi, và một lớp UI immediate-mode không giữ cây widget nào.
+---
+
+## Text
+
+`Font` là một atlas texture chứa các glyph cùng số đo của chúng. Text vẽ vào chính sprite batch thông
+thường, nên nó được gom batch chung với mọi thứ khác và không tốn thêm một pass nào.
+
+```cpp
+// TTF, rasterize thành atlas ở đúng chiều cao pixel bạn yêu cầu. Null nếu thiếu file.
+std::unique_ptr<text::Font> font =
+    text::Font::loadFromFile(app.device(), app.fileSystem(), "assets/inter.ttf", 32.0f);
+
+app.onRender([&](app::App& a, renderer::SpriteBatch& batch) {
+    text::drawText(batch, *font, "Điểm: 1200", /*topLeft*/ {-600.0f, 340.0f});
+});
+```
+
+`font->measure("...")` trả về kích thước mà chuỗi sẽ chiếm — thứ bạn cần để canh giữa, canh phải, hoặc
+để định kích thước một tấm panel đằng sau nó.
+
+## UI
+
+UI ở đây là **immediate mode**: không có cây widget, không có trạng thái được giữ lại, và không có gì
+phải đồng bộ với game của bạn. Bạn gọi `button()` mỗi frame, và nó trả về việc nút đó có được bấm *ở
+frame này* hay không.
+
+```cpp
+ui::UI gui{app.device()};   // tự giữ một pixel trắng 1×1 để tô nền
+
+app.onRender([&](app::App& a, renderer::SpriteBatch& batch) {
+    f32 mx, my;
+    a.input().mousePosition(mx, my);
+
+    const ui::InputState in{
+        .mouse    = a.camera().screenToWorld(mx, my),
+        .down     = a.input().isMouseDown(pf::MouseButton::Left),
+        .pressed  = a.input().isMousePressed(pf::MouseButton::Left),
+        .released = a.input().isMouseReleased(pf::MouseButton::Left),
+    };
+
+    gui.begin(batch, *font, in);
+
+    gui.panel({0.0f, 0.0f}, {300.0f, 200.0f});
+    gui.label({0.0f, 60.0f}, "Tạm dừng");
+
+    if (gui.button({0.0f, 0.0f}, {180.0f, 40.0f}, "Tiếp tục")) resume();
+    if (gui.button({0.0f, -50.0f}, {180.0f, 40.0f}, "Thoát"))  a.quit();
+
+    gui.end();
+});
+```
+
+Widget được định vị theo **tâm**, không phải theo góc trái trên — cùng quy ước với sprite, nên một phần
+tử UI và một sprite ở cùng tọa độ sẽ nằm đúng cùng một chỗ.
+
+### Cột
+
+Xếp widget bằng tay thì chán ngay lập tức. `beginColumn` xếp chồng chúng hộ bạn:
+
+```cpp
+gui.beginColumn(/*topCenter*/ {0.0f, 100.0f}, /*widgetSize*/ {180.0f, 40.0f}, /*spacing*/ 10.0f);
+gui.label("Tạm dừng");
+if (gui.button("Tiếp tục")) resume();
+if (gui.button("Thoát"))    app.quit();
+```
+
+Cột chạy tới `beginColumn` kế tiếp hoặc tới `end()` — không có gì phải đóng lại cả.
+
+### Tạo kiểu
+
+`gui.style` là một struct thuần: `panel`, `button`, `hovered`, `active`, `text`, cộng thêm `textScale`
+và `baseLayer`. Gán vào nó, và mọi widget sau dòng đó dùng giá trị mới. Không có hệ thống theme, bởi
+đơn giản là **không có cây widget** nào để một theme đi qua.
+
+`baseLayer` mặc định là 1000, và chính nó khiến UI nằm trên sprite của game mà bạn không phải nghĩ tới.
+
+<Callout type="warn">
+  Widget được định danh bằng **thứ tự gọi**, không phải bằng một id bạn truyền vào. Hãy gọi cùng những
+  widget đó theo cùng một trình tự ở mọi frame — một cái nút chỉ xuất hiện ở vài frame sẽ làm lệch danh
+  tính của **mọi** widget đứng sau nó, và trạng thái hover cùng click sẽ trôi theo cái lệch đó.
+</Callout>
+
+<Callout type="info">
+  Vị trí chuột đưa vào `InputState` là ở **không gian thế giới**, không phải không gian màn hình. Việc
+  quy đổi qua camera chính là thứ cho phép UI nằm trong thế giới (thanh máu trên đầu con quái) dễ dàng
+  như khi nó nằm trên màn hình.
+</Callout>

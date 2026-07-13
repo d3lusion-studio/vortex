@@ -1,0 +1,76 @@
+---
+title: The RHI and its backends
+description: The graphics seam, picking a backend, and dropping below the renderer when you need to.
+---
+
+The RHI is the load-bearing decision of the engine:
+
+> **No code above `rhi/` may name Vulkan, WebGPU, or any graphics API type.**
+
+The renderer builds *descriptions* — `GraphicsPipelineDesc`, `BindGroupDesc`, `RenderItem` — and hands
+them to an `IGraphicsDevice`. What that device is, it never learns.
+
+## Picking a backend
+
+Two implementations ship today: **Vulkan** and **WebGPU** (via `wgpu-native`).
+
+```bash
+VORTEX_RHI_API=vulkan ./build/release/examples/sprites
+VORTEX_RHI_API=webgpu ./build/release/examples/sprites
+```
+
+The environment variable wins at runtime. With it unset, the `VORTEX_RHI_BACKEND` CMake cache value
+decides. Either backend can be compiled out entirely:
+
+```bash
+cmake --preset release -DVORTEX_RHI_WITH_WEBGPU=OFF
+```
+
+<Callout type="info">
+  The WebGPU backend needs **`naga`** to transpile the shaders to WGSL: `cargo install naga-cli`.
+  Build with `-DVORTEX_RHI_WITH_WEBGPU=OFF` if you would rather not have the Rust toolchain.
+</Callout>
+
+## Push constants, and their absence
+
+Vulkan has push constants. **WebGPU does not** — they are a `wgpu-native` extension, and the standard
+has nothing equivalent.
+
+Rather than fork the renderer, the WebGPU backend **emulates** `ICommandList::pushConstants()` with a
+per-frame uniform ring buffer, bound at a reserved bind group with a dynamic offset. Every shader is
+compiled twice from one GLSL source: the Vulkan variant keeps `layout(push_constant)`, and the WebGPU
+variant (compiled with `VORTEX_NO_PUSH_CONSTANTS`) turns the same block into a uniform buffer.
+
+Gameplay and renderer code do not know any of this happened. That is what the seam is *for*: the pain
+stays on one side of it.
+
+## Dropping below the renderer
+
+`App` hands you the device, and the `FrameContext` gives you the command list — so reaching for the
+raw RHI does not mean abandoning the loop:
+
+```cpp
+rhi::IGraphicsDevice& device = app.device();
+
+rhi::BufferHandle vbo = device.createBuffer({
+    .size  = bytes,
+    .usage = rhi::BufferUsage::Vertex,
+}, data);
+```
+
+<Callout type="warn">
+  A `GraphicsPipelineDesc` carries its shaders in **both** languages — `vertexSpirv` for Vulkan and
+  `vertexWgsl` for WebGPU. A backend handed an empty blob for the language it speaks fails loudly at
+  pipeline creation rather than silently rendering nothing, but that only helps if you filled both
+  in. The generated shader headers give you both from a single GLSL source; use them.
+</Callout>
+
+## Adding a backend
+
+The seam is what makes DX12 or Metal a contained amount of work rather than a rewrite. Implement
+`IGraphicsDevice`, `ISwapchain` and `ICommandList` under `engine/rhi/src/<api>/`, register it in the
+factory, and nothing above `rhi/` changes.
+
+The WebGPU port is the proof — and also the warning. The seam held perfectly; what did not hold were
+the *assumptions* leaking through it: a callback that happened to be synchronous in one
+implementation, and a feature that exists in exactly one API.

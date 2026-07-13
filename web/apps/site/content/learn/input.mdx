@@ -1,0 +1,80 @@
+---
+title: Input
+description: Named actions over keys, mouse and gamepads — and why you should not read keys directly.
+---
+
+There are two layers. Reach for the second one.
+
+- **`app.input()`** — the raw device. `isKeyDown(Key::W)`, `mousePosition()`, gamepad state.
+- **`app.actions()`** — named actions bound to whatever you like.
+
+A game that reads keys directly cannot be rebound, and will never see a gamepad. That is the whole
+argument, and it is why `actions()` exists.
+
+## Binding
+
+```cpp
+pf::InputMap& actions = app.actions();
+
+actions.bind("jump", pf::Binding::ofKey(pf::Key::Space));
+actions.bind("jump", pf::Binding::ofPad(pf::GamepadButton::A));   // a second binding, not a replacement
+
+// An axis from two opposing buttons, and from a stick — both feed the same action.
+actions.bindAxis("moveX",
+                 pf::Binding::ofKey(pf::Key::D),      // positive
+                 pf::Binding::ofKey(pf::Key::A));     // negative
+actions.bind("moveX", pf::Binding::ofAxis(pf::GamepadAxis::LeftX));
+```
+
+`bind` **adds**. Use `rebind()` to replace an action's bindings wholesale — which is exactly what a
+key-rebinding screen does — and `clear()` to drop them.
+
+## Reading
+
+```cpp
+app.onFixedUpdate([](app::App& a, f32 dt) {
+    pf::InputMap& in = a.actions();
+
+    if (in.pressed("jump"))  a.physics().applyLinearImpulse(player, {0.0f, 400.0f});
+    if (in.down("fire"))     shoot();
+    if (in.released("aim"))  lowerWeapon();
+
+    const f32  x  = in.value("moveX");                  // [-1, 1], analogue
+    const Vec2 mv = in.vector("moveX", "moveY");        // both at once
+});
+```
+
+- **`down`** — held this frame.
+- **`pressed`** — went down *this* frame. The one you want for a jump.
+- **`released`** — went up this frame.
+- **`value`** — analogue, in `[-1, 1]`. A digital key reports exactly `-1`, `0` or `1`.
+
+## One sample per frame
+
+The loop calls `actions.update()` once, after polling the window and **before** any of your
+callbacks. Every query in a frame therefore sees the same snapshot — including `onFixedUpdate`, which
+may run several times in one frame and would otherwise see input change underneath it.
+
+<Callout type="info">
+  `pressed()` is true for the whole frame it fired in, including across multiple fixed steps. If you
+  apply an impulse on `pressed("jump")` inside `onFixedUpdate`, a frame that runs three fixed steps
+  applies it **three times**. Latch it yourself, or apply the jump in `onUpdate` and set a flag the
+  fixed step consumes.
+</Callout>
+
+## Dead zones
+
+```cpp
+actions.deadZone  = 0.2f;   // stick noise below this reads as zero
+actions.threshold = 0.5f;   // where an analogue axis counts as "down" for pressed/released
+```
+
+## Saving bindings
+
+`InputMap` serialises to and from JSON, so a rebinding screen is a load and a save rather than a
+format you invent:
+
+```cpp
+const json::Value doc = actions.save();
+actions.load(doc);
+```

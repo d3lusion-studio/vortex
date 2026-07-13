@@ -1,0 +1,77 @@
+---
+title: RHI và các backend
+description: Lớp trừu tượng đồ họa, cách chọn backend, và cách xuống dưới renderer khi cần.
+---
+
+RHI là quyết định **chịu lực** của cả engine:
+
+> **Không một dòng code nào phía trên `rhi/` được phép nhắc tới Vulkan, WebGPU, hay bất kỳ kiểu dữ liệu
+> nào của một graphics API.**
+
+Renderer chỉ dựng ra các *bản mô tả* — `GraphicsPipelineDesc`, `BindGroupDesc`, `RenderItem` — rồi giao
+cho một `IGraphicsDevice`. Cái device đó thực chất là gì, nó không bao giờ biết.
+
+## Chọn backend
+
+Hiện có hai hiện thực: **Vulkan** và **WebGPU** (qua `wgpu-native`).
+
+```bash
+VORTEX_RHI_API=vulkan ./build/release/examples/sprites
+VORTEX_RHI_API=webgpu ./build/release/examples/sprites
+```
+
+Biến môi trường thắng lúc chạy. Nếu không đặt, giá trị cache `VORTEX_RHI_BACKEND` của CMake sẽ quyết
+định. Backend nào cũng có thể bị loại hẳn khỏi bản build:
+
+```bash
+cmake --preset release -DVORTEX_RHI_WITH_WEBGPU=OFF
+```
+
+<Callout type="info">
+  Backend WebGPU cần **`naga`** để transpile shader sang WGSL: `cargo install naga-cli`. Nếu bạn không
+  muốn dính tới toolchain Rust thì build với `-DVORTEX_RHI_WITH_WEBGPU=OFF`.
+</Callout>
+
+## Push constant, và sự vắng mặt của nó
+
+Vulkan có push constant. **WebGPU thì không** — chúng là một extension riêng của `wgpu-native`, và bản
+chuẩn không có gì tương đương.
+
+Thay vì rẽ nhánh renderer, backend WebGPU **giả lập** `ICommandList::pushConstants()` bằng một uniform
+ring buffer theo từng frame, bind vào một bind group dành riêng với dynamic offset. Mỗi shader được
+compile **hai lần** từ cùng một nguồn GLSL: bản Vulkan giữ `layout(push_constant)`, còn bản WebGPU
+(compile với `VORTEX_NO_PUSH_CONSTANTS`) biến chính khối đó thành một uniform buffer.
+
+Code gameplay và renderer không hề biết chuyện đó đã xảy ra. Đó chính là **mục đích tồn tại** của lớp
+trừu tượng: nỗi đau bị giữ lại ở đúng một phía.
+
+## Xuống dưới renderer
+
+`App` đưa device cho bạn, và `FrameContext` đưa command list — nên với tay xuống RHI thô không có nghĩa
+là phải từ bỏ vòng lặp:
+
+```cpp
+rhi::IGraphicsDevice& device = app.device();
+
+rhi::BufferHandle vbo = device.createBuffer({
+    .size  = bytes,
+    .usage = rhi::BufferUsage::Vertex,
+}, data);
+```
+
+<Callout type="warn">
+  Một `GraphicsPipelineDesc` mang shader ở **cả hai** ngôn ngữ — `vertexSpirv` cho Vulkan và
+  `vertexWgsl` cho WebGPU. Backend nhận một blob rỗng cho đúng ngôn ngữ nó nói sẽ **báo lỗi to** ngay
+  lúc tạo pipeline thay vì lặng lẽ vẽ ra hư vô — nhưng điều đó chỉ cứu được bạn nếu bạn đã điền cả hai.
+  Các header shader sinh tự động cho bạn cả hai từ một nguồn GLSL duy nhất; hãy dùng chúng.
+</Callout>
+
+## Thêm một backend
+
+Lớp trừu tượng này chính là thứ khiến DX12 hay Metal chỉ là một khối lượng công việc có giới hạn, thay
+vì phải viết lại từ đầu. Hiện thực `IGraphicsDevice`, `ISwapchain` và `ICommandList` trong
+`engine/rhi/src/<api>/`, đăng ký vào factory, và **không một dòng nào phía trên `rhi/` phải đổi**.
+
+Bản port WebGPU là bằng chứng — và cũng là lời cảnh báo. Lớp trừu tượng đứng vững hoàn hảo; thứ **không**
+đứng vững là những **giả định** rò rỉ xuyên qua nó: một callback tình cờ đồng bộ trong đúng một hiện
+thực, và một tính năng chỉ tồn tại ở đúng một API.

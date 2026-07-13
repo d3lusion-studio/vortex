@@ -2,12 +2,11 @@ import { defineCollections, defineConfig, defineDocs, frontmatterSchema } from '
 import { z } from 'zod';
 
 /**
- * Docs live in `content/docs` as MDX. The engine's hand-written guides in the repo's top-level
- * `docs/` folder are the upstream source; they are ported here once and then maintained here,
- * because the site needs frontmatter, versioning and MDX components that plain Markdown can't carry.
+ * The Learn section: guides, not an API dump. Lives in `content/learn` as MDX, translated as
+ * sibling `*.vi.mdx` files.
  */
 export const docs = defineDocs({
-  dir: 'content/docs',
+  dir: 'content/learn',
 });
 
 /** Release notes and engineering posts. Every engine release gets one — this is how an

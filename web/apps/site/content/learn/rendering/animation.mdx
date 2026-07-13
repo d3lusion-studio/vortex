@@ -1,0 +1,65 @@
+---
+title: Sprite animation
+description: Clips, the animation library, and the component that plays them.
+---
+
+An `AnimationClip` is a list of frames on a texture page. Clips live in an `AnimationLibrary` and are
+referred to by handle, so the component that plays one is a plain value with no pointers in it.
+
+## Building clips
+
+```cpp
+renderer::AnimationLibrary anims;
+
+const renderer::SpriteSheet sheet{
+    .texture       = app.loadTexture("assets/player.png"),
+    .textureWidth  = 256,
+    .textureHeight = 64,
+    .columns       = 4,
+    .rows          = 1,
+};
+
+// Frames 0..3 of the sheet, at 12 fps, looping.
+const renderer::AnimationHandle idle = anims.addFromSheet(sheet, /*firstFrame*/ 0, /*count*/ 4);
+
+// Or: every frame of the sheet, in order.
+const renderer::AnimationHandle walk = anims.addFromSheet(sheet, /*fps*/ 12.0f, /*loop*/ true);
+```
+
+<Callout type="info">
+  Clips are **immutable once added**, which is what lets an animator component hold a bare handle.
+  It also means the order you add them in *is* their identity: adding the same clips in the same
+  order reconstructs every handle a saved scene refers to.
+</Callout>
+
+## Playing one
+
+```cpp
+app.registry().emplace<ecs::SpriteAnimator>(e, ecs::SpriteAnimator{.clip = idle});
+```
+
+The system advances every animator and writes the resolved frame onto the entity's `SpriteComp`
+before extraction — so the frame you see is the frame just computed, never last frame's.
+
+```cpp
+ecs::SpriteAnimator& anim = app.registry().get<ecs::SpriteAnimator>(e);
+
+anim.play(walk);        // use this to change clip
+anim.speed = -1.0f;     // negative plays backwards
+anim.playing = false;   // freeze on the current frame
+
+if (anim.finished) { /* latched on the last frame of a non-looping clip */ }
+```
+
+<Callout type="warn">
+  Assign `clip` directly and `time` keeps running from wherever the previous clip was — the new clip
+  starts mid-way through. `play()` resets it. That is the whole reason the method exists.
+</Callout>
+
+## Driving it yourself
+
+The system is an ordinary function, and you can call it without the App loop:
+
+```cpp
+ecs::updateSpriteAnimations(registry, library, dt);
+```

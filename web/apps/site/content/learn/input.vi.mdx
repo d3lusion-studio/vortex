@@ -1,0 +1,79 @@
+---
+title: Input
+description: Action đặt tên trên phím, chuột và tay cầm — và vì sao bạn không nên đọc phím trực tiếp.
+---
+
+Có hai tầng. Hãy dùng tầng thứ hai.
+
+- **`app.input()`** — thiết bị thô. `isKeyDown(Key::W)`, `mousePosition()`, trạng thái tay cầm.
+- **`app.actions()`** — các **action đặt tên**, gắn với bất cứ thứ gì bạn muốn.
+
+Một game đọc phím trực tiếp thì **không thể đổi phím**, và sẽ **không bao giờ** thấy tay cầm. Đó là toàn
+bộ lập luận, và là lý do `actions()` tồn tại.
+
+## Gắn phím
+
+```cpp
+pf::InputMap& actions = app.actions();
+
+actions.bind("jump", pf::Binding::ofKey(pf::Key::Space));
+actions.bind("jump", pf::Binding::ofPad(pf::GamepadButton::A));   // thêm một binding, không phải thay thế
+
+// Một trục từ hai nút đối nhau, và từ một cần analog — cả hai cùng nuôi một action.
+actions.bindAxis("moveX",
+                 pf::Binding::ofKey(pf::Key::D),      // dương
+                 pf::Binding::ofKey(pf::Key::A));     // âm
+actions.bind("moveX", pf::Binding::ofAxis(pf::GamepadAxis::LeftX));
+```
+
+`bind` là **cộng thêm**. Dùng `rebind()` để thay toàn bộ binding của một action — chính là việc mà màn
+hình đổi phím làm — và `clear()` để gỡ chúng.
+
+## Đọc
+
+```cpp
+app.onFixedUpdate([](app::App& a, f32 dt) {
+    pf::InputMap& in = a.actions();
+
+    if (in.pressed("jump"))  a.physics().applyLinearImpulse(player, {0.0f, 400.0f});
+    if (in.down("fire"))     shoot();
+    if (in.released("aim"))  lowerWeapon();
+
+    const f32  x  = in.value("moveX");                  // [-1, 1], analog
+    const Vec2 mv = in.vector("moveX", "moveY");        // cả hai cùng lúc
+});
+```
+
+- **`down`** — đang giữ ở frame này.
+- **`pressed`** — vừa nhấn xuống **ở frame này**. Đây là cái bạn muốn cho cú nhảy.
+- **`released`** — vừa nhả ra ở frame này.
+- **`value`** — analog, trong `[-1, 1]`. Một phím số sẽ báo đúng `-1`, `0` hoặc `1`.
+
+## Một lần lấy mẫu mỗi frame
+
+Vòng lặp gọi `actions.update()` đúng một lần, sau khi poll cửa sổ và **trước** mọi callback của bạn. Nhờ
+đó mọi truy vấn trong một frame đều thấy cùng một ảnh chụp — kể cả `onFixedUpdate`, thứ có thể chạy vài
+lần trong một frame và lẽ ra đã thấy input đổi dưới chân mình.
+
+<Callout type="warn">
+  `pressed()` đúng trong **suốt** cái frame nó bắn, kể cả qua nhiều fixed step. Nếu bạn áp impulse khi
+  `pressed("jump")` bên trong `onFixedUpdate`, một frame chạy ba fixed step sẽ áp impulse đó **ba lần**.
+  Hãy tự chốt cờ, hoặc xử lý cú nhảy trong `onUpdate` rồi đặt một cờ cho fixed step tiêu thụ.
+</Callout>
+
+## Vùng chết
+
+```cpp
+actions.deadZone  = 0.2f;   // nhiễu cần analog dưới mức này được coi là 0
+actions.threshold = 0.5f;   // mốc mà một trục analog được tính là "đang nhấn" cho pressed/released
+```
+
+## Lưu binding
+
+`InputMap` serialize được sang JSON và ngược lại, nên một màn hình đổi phím chỉ là một lần load và một
+lần save, chứ không phải một định dạng bạn tự bịa ra:
+
+```cpp
+const json::Value doc = actions.save();
+actions.load(doc);
+```

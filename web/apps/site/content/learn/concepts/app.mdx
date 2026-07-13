@@ -1,0 +1,116 @@
+---
+title: App and the game loop
+description: What App owns, when your callbacks run, and why there are two kinds of update.
+---
+
+`App` owns the window, the graphics device, the swapchain, the sprite batcher, the job system, the
+asset manager and the active scene — and drives all of them in one loop. A game that never needs to
+go below it never has to.
+
+```cpp
+#include "vortex/app/app.hpp"
+
+using namespace vortex;
+
+int main() {
+    app::App app{{.title = "My game", .width = 1280, .height = 720}};
+
+    app.onStart([](app::App& a) { /* build the world */ })
+       .onUpdate([](app::App& a, f32 dt) { /* gameplay */ });
+
+    return app.run();
+}
+```
+
+## Configuration
+
+`AppConfig` is a plain struct with designated initialisers. The fields worth knowing:
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `width`, `height`, `title` | 1280×720 | The window |
+| `clearColor` | `#0A0D17` | Cleared at the start of every frame |
+| `fixedTimeStep` | `1/60` | The rate `onFixedUpdate` and physics run at |
+| `maxFrameTime` | `0.25` | Longest frame the loop will simulate |
+| `maxSprites` | `100000` | Batcher capacity, allocated once |
+| `parallelExtract` | `false` | Fan world-matrix composition across the job system |
+| `workerCount` | `0` | Job threads; 0 means hardware concurrency |
+| `maxFrames` | `0` | Stop after N frames; for headless and CI runs |
+| `gravity` | `{0, -9.81}` | Handed to every physics world App creates |
+| `pixelsPerMeter` | `100` | Bridges the solver's metres and your pixels |
+
+## The five callbacks
+
+Each is chainable, and registering one twice replaces it rather than adding a second.
+
+```cpp
+app.onStart([](App& a) { ... })              // once, before the first frame
+   .onFixedUpdate([](App& a, f32 dt) { ... }) // 0..N times per frame, fixed dt
+   .onUpdate([](App& a, f32 dt) { ... })      // once per frame, variable dt
+   .onRender([](App& a, SpriteBatch& b) { ... })
+   .onShutdown([](App& a) { ... });           // once, after the loop exits
+```
+
+## Why two updates
+
+`onUpdate` runs once per frame with whatever `dt` the frame took. `onFixedUpdate` runs at a fixed
+`dt`, zero or more times per frame, until simulated time catches up with real time.
+
+Put anything the physics solver or your gameplay determinism depends on in **`onFixedUpdate`**: a
+jump that applies an impulse, a projectile that integrates position. Put anything that just has to
+look right this frame in **`onUpdate`**: camera follow, UI, reading input for intent.
+
+<Callout type="warn">
+  A frame slower than `maxFrameTime` is **truncated**, not replayed. This is deliberate: replaying a
+  two-second stall as 120 fixed steps takes longer than the stall did, which makes the next frame
+  slower still — the classic spiral of death. The simulation loses time instead of losing control.
+</Callout>
+
+If a fixed step leaves a fraction of a step unsimulated, `fixedAlpha()` returns it in `[0, 1)`.
+Interpolate rendering with it to remove the stutter that fixed-step simulation otherwise shows at
+non-multiple frame rates.
+
+## Order within a frame
+
+The loop is not a bag of callbacks; the order is load-bearing.
+
+1. A queued scene switch is applied — no system ever sees the world change under it mid-frame.
+2. The clock ticks; input is sampled **once** into `actions()`, so every query in the frame agrees.
+3. The window is polled and a resize is forwarded to the swapchain and the camera.
+4. **Fixed loop**, while there is time to catch up: physics steps first, then `onFixedUpdate`. Your
+   callback therefore reads transforms the solver has already settled *this* step, not last step's.
+5. `onUpdate`, then the scene's own systems.
+6. The frame is acquired, the render pass opened, sprites extracted and batched, `onRender` runs,
+   the batch is flushed and the frame is submitted.
+
+## Lazily created subsystems
+
+`physics()` and `audio()` are created the first time you ask for them, per scene in the case of
+physics. A game with no physics never constructs a solver and never pays for one; a machine with no
+audio device returns `nullptr` from `audio()` rather than failing to start — which is the normal
+state in CI.
+
+```cpp
+// Creates the world for the active scene on the first call, and the loop begins
+// stepping it inside the fixed update from that point on.
+app.physics().applyLinearImpulse(player, {0.0f, 400.0f});
+```
+
+## Handy shortcuts
+
+```cpp
+rhi::TextureHandle tex = app.loadTexture("assets/player.png");  // load + resolve to GPU
+rhi::TextureHandle px  = app.whiteTexture();                    // 1×1 white, for flat quads
+app.playSound("assets/jump.wav");
+
+app.saveScene("save.scene.json");
+app.loadScene("save.scene.json");
+
+f32   dt    = app.deltaTime();
+f32   fps   = app.fps();
+u32   draws = app.drawCalls();
+usize seen  = app.visibleSprites();
+```
+
+`whiteTexture()` is worth remembering: tint it and you can draw flat-coloured quads — particles,
+UI fills, debug rectangles — without an image on disk.

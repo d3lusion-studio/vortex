@@ -1,0 +1,42 @@
+---
+title: Âm thanh
+description: Nạp và phát âm thanh — và vì sao engine có thể chẳng đưa cho bạn gì cả.
+---
+
+Dạng ngắn đủ cho phần lớn nhu cầu của một game:
+
+```cpp
+app.playSound("assets/jump.wav");
+app.playSound("assets/music.ogg", /*loop*/ true);
+```
+
+Âm thanh được nạp ở lần dùng đầu tiên và tái sử dụng sau đó, khóa theo đường dẫn.
+
+## Engine âm thanh
+
+Với bất cứ thứ gì hơn thế — dừng một vòng lặp, chỉnh âm lượng từng tiếng — hãy lấy engine:
+
+```cpp
+audio::IAudioEngine* engine = app.audio();
+if (!engine) return;   // xem cảnh báo bên dưới
+
+const audio::SoundHandle music = engine->load("assets/music.ogg");
+
+engine->play(music, /*loop*/ true);
+engine->setVolume(music, 0.4f);
+engine->setMasterVolume(0.8f);
+engine->stop(music);
+engine->unload(music);
+```
+
+<Callout type="warn">
+  **`app.audio()` có thể trả về `nullptr`, và đó không phải lỗi.** Một máy không có thiết bị âm thanh —
+  máy chạy CI, server headless, container — sẽ không có, và câu trả lời của engine là **cứ chạy tiếp
+  trong im lặng** thay vì từ chối khởi động.
+
+  Hãy kiểm tra con trỏ. `playSound()` đã kiểm tra sẵn và đơn giản là không làm gì khi không có thiết bị
+  — đó là lý do nó là lời gọi an toàn hơn.
+</Callout>
+
+Thiết bị được mở ở **lần đầu** gọi `audio()` hoặc `playSound()`, và một lần mở thất bại sẽ không bị thử
+lại mỗi frame. Một game không phát tiếng nào thì không bao giờ mở thiết bị.

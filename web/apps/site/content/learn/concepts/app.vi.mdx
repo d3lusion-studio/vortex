@@ -1,0 +1,121 @@
+---
+title: App và vòng lặp game
+description: App sở hữu những gì, callback của bạn chạy khi nào, và vì sao lại có tới hai loại update.
+---
+
+`App` sở hữu cửa sổ, graphics device, swapchain, sprite batcher, job system, asset manager và scene
+đang hoạt động — rồi điều khiển tất cả trong một vòng lặp. Một game không bao giờ cần xuống thấp hơn
+nó thì không bao giờ phải xuống.
+
+```cpp
+#include "vortex/app/app.hpp"
+
+using namespace vortex;
+
+int main() {
+    app::App app{{.title = "Game của tôi", .width = 1280, .height = 720}};
+
+    app.onStart([](app::App& a) { /* dựng thế giới */ })
+       .onUpdate([](app::App& a, f32 dt) { /* gameplay */ });
+
+    return app.run();
+}
+```
+
+## Cấu hình
+
+`AppConfig` là một struct thuần, dùng designated initialiser. Những trường đáng biết:
+
+| Trường | Mặc định | Tác dụng |
+| --- | --- | --- |
+| `width`, `height`, `title` | 1280×720 | Cửa sổ |
+| `clearColor` | `#0A0D17` | Xóa nền ở đầu mỗi frame |
+| `fixedTimeStep` | `1/60` | Nhịp mà `onFixedUpdate` và physics chạy |
+| `maxFrameTime` | `0.25` | Frame dài nhất mà vòng lặp chịu mô phỏng |
+| `maxSprites` | `100000` | Sức chứa batcher, cấp phát một lần |
+| `parallelExtract` | `false` | Rải việc dựng ma trận thế giới ra job system |
+| `workerCount` | `0` | Số thread; 0 nghĩa là theo số lõi phần cứng |
+| `maxFrames` | `0` | Dừng sau N frame; dùng cho chạy headless và CI |
+| `gravity` | `{0, -9.81}` | Truyền cho mọi physics world mà App tạo |
+| `pixelsPerMeter` | `100` | Cầu nối giữa mét của solver và pixel của bạn |
+
+## Năm callback
+
+Mỗi cái đều nối chuỗi được, và đăng ký hai lần thì cái sau **thay thế** cái trước chứ không cộng thêm.
+
+```cpp
+app.onStart([](App& a) { ... })              // một lần, trước frame đầu tiên
+   .onFixedUpdate([](App& a, f32 dt) { ... }) // 0..N lần mỗi frame, dt cố định
+   .onUpdate([](App& a, f32 dt) { ... })      // một lần mỗi frame, dt thay đổi
+   .onRender([](App& a, SpriteBatch& b) { ... })
+   .onShutdown([](App& a) { ... });           // một lần, sau khi vòng lặp thoát
+```
+
+## Vì sao có hai loại update
+
+`onUpdate` chạy một lần mỗi frame với `dt` đúng bằng thời gian frame đó tốn. `onFixedUpdate` chạy với
+`dt` **cố định**, không hoặc nhiều lần mỗi frame, cho tới khi thời gian mô phỏng đuổi kịp thời gian
+thật.
+
+Đặt vào **`onFixedUpdate`** mọi thứ mà solver hoặc tính tất định của gameplay phụ thuộc vào: một cú
+nhảy áp impulse, một viên đạn tích phân vị trí. Đặt vào **`onUpdate`** những thứ chỉ cần trông đúng ở
+frame này: camera bám theo nhân vật, UI, đọc input để biết ý định người chơi.
+
+<Callout type="warn">
+  Một frame chậm hơn `maxFrameTime` sẽ bị **cắt cụt**, không phải phát lại. Đây là chủ ý: phát lại một
+  cú khựng 2 giây thành 120 fixed step còn tốn thời gian hơn chính cú khựng đó, khiến frame kế tiếp
+  càng chậm hơn nữa — vòng xoáy tử thần kinh điển. Mô phỏng chấp nhận **mất thời gian** thay vì mất
+  kiểm soát.
+</Callout>
+
+Nếu một fixed step còn dư một phần chưa mô phỏng, `fixedAlpha()` trả về phần dư đó trong `[0, 1)`.
+Dùng nó để nội suy khi vẽ, và xóa được cái giật mà mô phỏng bước cố định luôn để lộ ở những mức
+framerate không chia hết.
+
+## Thứ tự trong một frame
+
+Vòng lặp không phải một túi callback; thứ tự là **chịu lực**.
+
+1. Yêu cầu chuyển scene đang xếp hàng được áp dụng — không system nào thấy thế giới đổi dưới chân mình
+   giữa chừng.
+2. Clock tick; input được lấy mẫu **một lần** vào `actions()`, nên mọi truy vấn trong frame đều thống
+   nhất.
+3. Cửa sổ được poll, và một lần resize được chuyển tiếp tới swapchain lẫn camera.
+4. **Vòng lặp cố định**, chừng nào còn thời gian phải đuổi: physics step trước, rồi mới `onFixedUpdate`.
+   Nhờ vậy callback của bạn đọc được transform mà solver đã giải xong **ở chính step này**, không phải
+   step trước.
+5. `onUpdate`, rồi tới các system của scene.
+6. Frame được acquire, render pass mở ra, sprite được extract và gom batch, `onRender` chạy, batch được
+   flush và frame được submit.
+
+## Hệ thống con tạo lười
+
+`physics()` và `audio()` chỉ được tạo ở **lần đầu bạn hỏi tới**, và với physics là theo từng scene. Một
+game không có physics thì không bao giờ dựng solver và không trả giá cho nó; một máy không có thiết bị
+âm thanh sẽ nhận `nullptr` từ `audio()` chứ không phải là không khởi động được — đó là trạng thái bình
+thường trên CI.
+
+```cpp
+// Tạo world cho scene đang hoạt động ở lần gọi đầu tiên, và từ đó vòng lặp bắt đầu
+// step nó bên trong fixed update.
+app.physics().applyLinearImpulse(player, {0.0f, 400.0f});
+```
+
+## Vài lối tắt tiện
+
+```cpp
+rhi::TextureHandle tex = app.loadTexture("assets/player.png");  // load + resolve sang GPU
+rhi::TextureHandle px  = app.whiteTexture();                    // 1×1 trắng, để vẽ quad phẳng
+app.playSound("assets/jump.wav");
+
+app.saveScene("save.scene.json");
+app.loadScene("save.scene.json");
+
+f32   dt    = app.deltaTime();
+f32   fps   = app.fps();
+u32   draws = app.drawCalls();
+usize seen  = app.visibleSprites();
+```
+
+`whiteTexture()` đáng nhớ: nhuộm màu nó là bạn vẽ được quad màu phẳng — particle, mảng UI, hình chữ
+nhật debug — mà không cần một tấm ảnh nào trên đĩa.

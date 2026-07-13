@@ -1,0 +1,61 @@
+---
+title: Performance
+description: What to measure, what the numbers mean, and the handful of things that actually matter in 2D.
+---
+
+Start with the numbers the engine already gives you:
+
+```cpp
+app.fps();              // frames per second
+app.deltaTime();        // seconds, clamped to maxFrameTime
+app.drawCalls();        // draw calls last frame
+app.visibleSprites();   // sprites that survived culling
+```
+
+The gap between your entity count and `visibleSprites()` is what culling saved you. The gap between
+`visibleSprites()` and `drawCalls()` is what batching saved you.
+
+## The three that matter in 2D
+
+**1. Draw calls.** The batcher groups consecutive sprites that share a texture. It does not reorder
+across textures, so interleaving them costs a draw call every time you switch. Ten sprites alternating
+between two atlases is ten draws; the same ten sorted by atlas is two.
+
+The fix is not code, it is art: pack sprites that appear together into the same atlas.
+
+**2. Culling.** Pass the camera bounds to extraction and an off-screen sprite costs an AABB test
+instead of a 4×4 matrix multiply:
+
+```cpp
+ecs::extractSprites(registry, items, &camera.visibleBounds());
+```
+
+A tilemap culls the same way, which is why a 4096×4096 map costs the same to draw as a 64×32 one.
+
+**3. Where the work is.** Extraction and matrix composition dominate a big 2D scene — not the GPU. If
+`visibleSprites()` is in the thousands and the frame is slow, that is where to look, and
+`parallelExtract` is the switch for it.
+
+## Profiling
+
+Build with Tracy and get a real timeline rather than a guess:
+
+```bash
+cmake --preset release -DVORTEX_WITH_TRACY=ON
+```
+
+The engine's own zones (`app.update`, `app.extract`, `batch.upload`, `app.fixedUpdate`) are already
+instrumented. Add your own with `VORTEX_PROFILE_ZONE("name")`.
+
+<Callout type="warn">
+  Measure a **release** build. A debug build's numbers are not a slower version of the truth; they are
+  a different shape entirely — the ECS's packed iteration is exactly the kind of code an optimiser
+  transforms out of recognition, and profiling it unoptimised will send you after the wrong thing.
+</Callout>
+
+## Things that are not the problem
+
+- **`view()` copies a vector per call.** It does, and it is cheap next to the work a system does. Do
+  not call it in an inner loop and it will not show up.
+- **Entities are not slow.** Spawning is a slot reuse, not an allocation.
+- **Particles are not entities.** Tens of thousands of them cost no registry traffic at all.

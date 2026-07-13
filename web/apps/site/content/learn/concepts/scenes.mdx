@@ -1,0 +1,74 @@
+---
+title: Scenes and persistence
+description: Several worlds, switching between them safely, and saving one to disk.
+---
+
+A `Scene` owns a registry, a camera, a particle world and a list of systems. A game with one world
+never has to know `SceneManager` exists — `app.scene()` is the active one.
+
+```cpp
+ecs::Scene&   scene = app.scene();
+ecs::Registry& reg  = app.registry();      // == scene.registry()
+renderer::Camera2D& cam = app.camera();    // == scene.camera
+```
+
+## Several scenes
+
+```cpp
+app.scenes().create("menu");
+app.scenes().create("level1");
+
+app.scenes().requestSwitch("level1");   // queued, not immediate
+```
+
+Scenes are held by pointer, so a `Scene&` you handed to gameplay code stays valid when another
+scene is created or destroyed. `destroy()` refuses to remove the active scene — switch away first,
+or the loop would have nothing left to run.
+
+<Callout type="warn">
+  A switch is **queued** and applied at the top of the next frame, before anything reads the world.
+  This is the only safe way to do it: a system that switched scenes mid-update would pull the
+  registry out from under every system after it — including itself.
+</Callout>
+
+Each scene gets its own physics world the first time `app.physics()` is called while it is active.
+They are never shared: two registries hand out the same entity indices to entirely different
+entities, so one solver across both would mix up bodies.
+
+## Saving and loading
+
+```cpp
+app.saveScene("save.scene.json");   // false on a write failure
+app.loadScene("save.scene.json");   // false if missing or malformed
+```
+
+Textures are serialised as **the path they were loaded from**, and resolved back through the
+`AssetManager` on load — a saved scene refers to assets, not to GPU handles, which would be
+meaningless in a new process.
+
+<Callout type="warn">
+  A failed `loadScene` leaves the active scene **empty**, not untouched. Check the return value
+  before assuming there is still a world.
+
+  A texture created directly on the device rather than through `assets()` has no path, and will come
+  back unset. Load anything that must survive a save through `app.loadTexture()`.
+</Callout>
+
+## Prefabs
+
+The same machinery serialises **one entity and its descendants** as a reusable template. These work
+in `json::Value`, not files — reading and writing the file is yours, which is what lets a prefab
+live inside a level file, an archive, or a network packet rather than only on disk.
+
+```cpp
+const ecs::SerializeContext& ctx = app.serializeContext();
+
+const json::Value prefab = ecs::savePrefab(app.scene(), enemy, ctx);
+
+// Stamped at a world position. The prefab's own root position is treated as an
+// offset from `at`, so a prefab authored around the origin lands where you asked.
+ecs::Entity spawned = ecs::instantiate(app.scene(), prefab, {120.0f, 0.0f}, ctx);
+```
+
+Parent links are written as **indices into the entity list**, not as ids, so a prefab survives
+entity ids being handed out differently on the next run.

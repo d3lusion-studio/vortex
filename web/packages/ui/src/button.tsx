@@ -4,24 +4,30 @@ import { cn } from './cn';
 type Variant = 'primary' | 'secondary' | 'ghost';
 type Size = 'sm' | 'md' | 'lg';
 
+/**
+ * Square, hard-edged, no shadow. The "press" is a 1px downward nudge — the cheapest possible
+ * affordance, and the only one that fits a pixel grid.
+ */
 const VARIANTS: Record<Variant, string> = {
   primary:
-    'bg-accent-500 text-ink-950 hover:bg-accent-400 shadow-[0_8px_30px_-8px_rgb(6_182_212/0.6)]',
+    'bg-[var(--accent)] text-[var(--accent-contrast)] hover:brightness-110 active:translate-y-px',
   secondary:
-    'bg-white/5 text-[var(--text-primary)] ring-1 ring-inset ring-white/12 hover:bg-white/10',
-  ghost: 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-white/5',
+    'bg-[var(--surface-raised)] text-[var(--text-primary)] border border-[var(--border-strong)] ' +
+    'hover:border-[var(--accent)] hover:text-[var(--accent)] active:translate-y-px',
+  ghost: 'text-[var(--text-muted)] hover:text-[var(--text-primary)]',
 };
 
 const SIZES: Record<Size, string> = {
-  sm: 'h-8 px-3 text-sm',
+  sm: 'h-8 px-3 text-[13px]',
   md: 'h-10 px-4 text-sm',
-  lg: 'h-12 px-6 text-base',
+  lg: 'h-11 px-6 text-sm',
 };
 
 const BASE =
-  'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors ' +
-  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-400 ' +
-  'disabled:pointer-events-none disabled:opacity-50';
+  'inline-flex items-center justify-center gap-2 rounded-none font-medium tracking-tight ' +
+  'transition-[filter,color,border-color,transform] duration-75 ' +
+  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ' +
+  'focus-visible:outline-[var(--accent)] disabled:pointer-events-none disabled:opacity-50';
 
 interface Common {
   variant?: Variant;

@@ -1,0 +1,70 @@
+---
+title: Build options
+description: CMake presets, options, and the environment variables the engine reads.
+---
+
+## Presets
+
+```bash
+cmake --preset debug            # -O0, warnings as errors
+cmake --preset release          # -O3
+cmake --preset relwithdebinfo   # optimised, with symbols — what to profile
+
+cmake --build --preset release
+```
+
+Ninja is the generator and `compile_commands.json` is written for clangd.
+
+## CMake options
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `VORTEX_BUILD_EXAMPLES` | ON | Build `examples/` |
+| `VORTEX_BUILD_TOOLS` | ON | Build `tools/` (asset cooker) |
+| `VORTEX_BUILD_TESTS` | ON | Build `tests/` |
+| `VORTEX_INSTALL` | ON | Generate install/export rules |
+| `VORTEX_WARNINGS_AS_ERRORS` | OFF | `-Wall -Wextra` become errors |
+| `VORTEX_WITH_TRACY` | OFF | Tracy profiler backend |
+| `VORTEX_RHI_WITH_VULKAN` | ON | Build the Vulkan backend |
+| `VORTEX_RHI_WITH_WEBGPU` | ON | Build the WebGPU backend |
+| `VORTEX_RHI_BACKEND` | `Vulkan` | Default backend when `VORTEX_RHI_API` is unset |
+
+At least one backend must be enabled; the configure fails otherwise rather than producing a library
+that cannot draw.
+
+## Environment variables
+
+| Variable | Values | Effect |
+| --- | --- | --- |
+| `VORTEX_RHI_API` | `vulkan`, `webgpu` | Picks the backend at runtime, overriding the CMake default |
+| `VORTEX_SPRITES` | integer | Sprite count in the `sprites` example |
+| `GLFW_PLATFORM` | `x11`, `wayland` | Overrides the window platform |
+
+## Dependencies
+
+Fetched automatically by CMake (`FetchContent`): stb, Dear ImGui, miniaudio, Box2D, Vulkan-Headers,
+VMA, vk-bootstrap, wgpu-native, doctest.
+
+You supply:
+
+| Tool | Needed for |
+| --- | --- |
+| **glslc** | Always — compiles GLSL to SPIR-V (ships with the Vulkan SDK) |
+| **Vulkan SDK** 1.3 | The Vulkan backend |
+| **glfw** 3.4 | Windowing |
+| **naga** (`cargo install naga-cli`) | The WebGPU backend — transpiles SPIR-V to WGSL |
+
+## Linking against Vortex
+
+```cmake
+find_package(Vortex REQUIRED)
+
+add_executable(my_game main.cpp)
+target_link_libraries(my_game PRIVATE Vortex::vortex)
+```
+
+## Wayland
+
+On a Wayland session the examples currently force **X11/XWayland**, and log that they did. This is a
+placeholder, not a preference: the native Wayland swapchain path is not finished. Override it with
+`GLFW_PLATFORM=wayland` if you want to see what breaks.

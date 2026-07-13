@@ -12,7 +12,7 @@ import type { Lang } from '@/lib/i18n';
  */
 const en = {
   nav: {
-    docs: 'Docs',
+    learn: 'Learn',
     blog: 'Blog',
     assets: 'Assets',
     github: 'GitHub',
@@ -24,7 +24,7 @@ const en = {
     titleLead: 'A game engine you can',
     titleAccent: 'read all the way down',
     subtitle:
-      'Vortex is a data-oriented C++20 engine with a backend-neutral renderer. You own the stack from the GPU command buffer up to the gameplay API — and it ships to the web.',
+      'Vortex is a data-oriented C++20 engine with a backend-neutral renderer. You own the stack from the GPU command buffer all the way up to the gameplay API.',
     ctaPrimary: 'Get started',
     ctaSecondary: 'View the source',
   },
@@ -64,7 +64,7 @@ const en = {
   },
   closing: {
     title: 'Start with the triangle. Finish with a game.',
-    ctaDocs: 'Read the docs',
+    ctaDocs: 'Start learning',
     ctaGithub: 'Star on GitHub',
     assetsPrompt: 'Looking for assets and plugins?',
     assetsLink: 'Browse the registry',
@@ -100,7 +100,7 @@ const en = {
     tagline: 'An open-source, data-oriented C++ game engine.',
     product: 'Product',
     community: 'Community',
-    documentation: 'Documentation',
+    learn: 'Learn',
     roadmap: 'Roadmap',
     registry: 'Asset registry',
     discussions: 'Discussions',
@@ -113,7 +113,7 @@ export type Dictionary = typeof en;
 
 const vi: Dictionary = {
   nav: {
-    docs: 'Tài liệu',
+    learn: 'Học',
     blog: 'Blog',
     assets: 'Tài nguyên',
     github: 'GitHub',
@@ -125,7 +125,7 @@ const vi: Dictionary = {
     titleLead: 'Một game engine bạn có thể',
     titleAccent: 'đọc hiểu tới tận đáy',
     subtitle:
-      'Vortex là engine C++20 hướng dữ liệu với renderer độc lập backend. Bạn sở hữu toàn bộ stack, từ command buffer của GPU lên tới API gameplay — và nó chạy được trên web.',
+      'Vortex là engine C++20 hướng dữ liệu với renderer độc lập backend. Bạn sở hữu toàn bộ stack, từ command buffer của GPU lên tới tận API gameplay.',
     ctaPrimary: 'Bắt đầu',
     ctaSecondary: 'Xem mã nguồn',
   },
@@ -165,7 +165,7 @@ const vi: Dictionary = {
   },
   closing: {
     title: 'Bắt đầu từ tam giác. Kết thúc bằng một trò chơi.',
-    ctaDocs: 'Đọc tài liệu',
+    ctaDocs: 'Bắt đầu học',
     ctaGithub: 'Star trên GitHub',
     assetsPrompt: 'Đang tìm asset và plugin?',
     assetsLink: 'Xem registry',
@@ -201,7 +201,7 @@ const vi: Dictionary = {
     tagline: 'Game engine C++ mã nguồn mở, hướng dữ liệu.',
     product: 'Sản phẩm',
     community: 'Cộng đồng',
-    documentation: 'Tài liệu',
+    learn: 'Học',
     roadmap: 'Lộ trình',
     registry: 'Registry tài nguyên',
     discussions: 'Thảo luận',

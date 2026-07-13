@@ -21,8 +21,8 @@ export default async function BlogPost({ params }: Props) {
 
   return (
     <article className="mx-auto w-full max-w-3xl px-6 py-20">
-      <time className="font-mono text-xs text-accent-400">{post.date}</time>
-      <h1 className="mt-3 text-4xl font-semibold tracking-tight text-balance">{post.title}</h1>
+      <time className="font-mono text-[11px] text-[var(--text-muted)]">{post.date}</time>
+      <h1 className="mt-2 text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{post.title}</h1>
       <p className="mt-3 text-sm text-[var(--text-muted)]">
         {dict.blog.by} {post.author}
       </p>

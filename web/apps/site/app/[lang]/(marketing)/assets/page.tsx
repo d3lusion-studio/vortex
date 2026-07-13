@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Card, Section } from '@vortex/ui';
+import { Section } from '@vortex/ui';
 import { getDictionary } from '@/content/dictionary';
 import { toLang } from '@/lib/i18n';
 
@@ -31,12 +31,14 @@ export default async function AssetsPage({ params }: Props) {
       title={dict.assets.title}
       description={dict.assets.description}
     >
-      <div className="grid gap-5 md:grid-cols-3">
+      <div className="grid gap-px border border-[var(--border-subtle)] bg-[var(--border-subtle)] md:grid-cols-3">
         {dict.assets.plan.map((step) => (
-          <Card key={step.phase}>
-            <h3 className="font-mono text-sm text-accent-400">{step.phase}</h3>
+          <div key={step.phase} className="bg-[var(--surface-raised)] p-6">
+            <h3 className="font-pixel text-[10px] tracking-[0.15em] text-[var(--accent)] uppercase">
+              {step.phase}
+            </h3>
             <p className="mt-3 text-sm leading-relaxed text-[var(--text-muted)]">{step.body}</p>
-          </Card>
+          </div>
         ))}
       </div>
     </Section>

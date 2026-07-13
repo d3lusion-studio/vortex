@@ -1,0 +1,79 @@
+---
+title: Particles
+description: Pooled, structure-of-arrays emitters that never allocate after construction.
+---
+
+A `ParticleEmitter` is one effect: a fixed-capacity pool laid out as a structure of arrays. Nothing
+allocates after construction, dead particles are swap-and-popped rather than leaving holes, and the
+whole thing drops new particles instead of the frame budget when it fills up.
+
+`ParticleWorld` owns the emitters. It lives on the scene, so `app.particles()` is the active one.
+
+## Describing an effect
+
+```cpp
+const renderer::ParticleEmitterDesc spark{
+    // Required — the batcher binds a texture per draw. A 1×1 white pixel gives you
+    // flat-coloured particles with no image on disk.
+    .texture = app.whiteTexture(),
+
+    // Spawn shape, relative to the emitter's position.
+    .spawnRadius = 4.0f,          // disc; leave at 0 to spawn from a point
+
+    .rate = 200.0f,               // particles per second; 0 = burst-only
+
+    .lifetime  = {0.4f, 0.9f},    // a Range: min..max, rolled per particle
+    .speed     = {80.0f, 160.0f},
+    .direction = {0.0f, kTwoPi},  // radians; collapse the range for a directed jet
+    .size      = 6.0f,            // world units at scale 1
+
+    .gravity = {0.0f, -200.0f},
+    .drag    = 1.5f,              // velocity *= 1 / (1 + drag * dt)
+
+    // Life curves, evaluated on normalised age in [0, 1].
+    .startColor = Color::fromRgb(0xFFD08A),
+    .endColor   = Color::transparent(),
+    .startScale = 1.0f,
+    .endScale   = 0.2f,
+    .scaleCurve = easing::Ease::Linear,
+
+    // The pool is allocated once at this size and never grows.
+    .capacity = 2048,
+};
+
+const renderer::EmitterHandle h = app.particles().add(spark);
+```
+
+Every numeric field is a `Range`, and a single value **is** a range of one: `.size = 6.0f` and
+`.size = {6.0f, 6.0f}` mean the same thing. Randomisation is opt-in by writing two numbers instead of
+one.
+
+## Emitting
+
+```cpp
+renderer::ParticleEmitter* e = app.particles().get(h);
+
+e->emit(32);                  // burst from wherever the emitter currently is
+e->emitAt({x, y}, 32);        // move the emitter, then burst
+e->clear();                   // kill every live particle, keep the pool
+```
+
+With `rate > 0` the emitter also spawns a steady stream on its own; bursts add on top of it.
+
+## Why they are not entities
+
+Particles live in the pool, not the registry. There is no entity id, no component lookup and no
+sparse-set indirection per particle — which is the entire reason tens of thousands of them are
+affordable.
+
+They extract into the **same draw list** as the sprites and the tilemap:
+
+```cpp
+app.particles().extract(items, &app.camera().visibleBounds());
+```
+
+So a scene full of sprites plus a fountain of sparks is still one sorted batch, and usually costs one
+draw call more than the sprites alone. `update(dt, jobs)` fans integration across the job system once
+the pool is big enough for the sync to pay for itself.
+
+`aliveParticles()` and `emitterCount()` are there when you want to know what you are actually paying.

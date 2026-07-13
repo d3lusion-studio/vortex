@@ -1,0 +1,93 @@
+---
+title: 3D, PBR và post-processing
+description: Mesh, mô hình vật liệu GGX, shadow PCF, và chuỗi bloom HDR.
+---
+
+<Callout type="warn">
+  Nhánh 3D chạy được, nhưng **2D mới là phần hoàn chỉnh**. Hãy chuẩn bị tinh thần cho các khoảng trống:
+  chưa có scene graph cho mesh ngoài `Parent`, chưa có skinning, và backend WebGPU chưa bind bộ
+  image-based lighting — nên IBL hiện chỉ chạy trên Vulkan.
+</Callout>
+
+## Mesh
+
+```cpp
+const renderer::MeshData   cube = renderer::makeCube(1.0f);
+const renderer::MeshHandle mesh = meshRenderer.upload(cube);
+
+const ecs::Entity e = app.scene().spawn();
+app.registry().emplace<ecs::Transform3D>(e, ecs::Transform3D{
+    .position = {0.0f, 1.0f, 0.0f},
+    .scale    = {1.0f, 1.0f, 1.0f},
+});
+app.registry().emplace<ecs::MeshComp>(e, ecs::MeshComp{
+    .mesh      = mesh,
+    .albedo    = Color::fromRgb(0xCC5544),
+    .metallic  = 0.0f,
+    .roughness = 0.4f,
+});
+```
+
+`Transform3D` mang phép quay dạng **quaternion**, không phải góc Euler — không gimbal lock, và nội suy
+hành xử đúng.
+
+Mesh cũng extract như mọi thứ khác:
+
+```cpp
+std::vector<renderer::MeshInstance> instances;
+ecs::extractMeshes(registry, instances);
+```
+
+## Mô hình vật liệu
+
+Metallic–roughness, tính bằng GGX:
+
+- **`albedo`** — màu nền. Với kim loại, đây là màu **phản xạ**, không phải màu khuếch tán.
+- **`metallic`** — trên thực tế chỉ nên là 0 hoặc 1. Giá trị ở giữa dành cho vùng chuyển tiếp (gỉ sét,
+  bụi bám), không phải để diễn tả "hơi bóng một chút".
+- **`roughness`** — 0 là gương, 1 là phấn. Dưới khoảng 0.05 thì một nguồn sáng trực tiếp co lại thành
+  một pixel răng cưa, nên hãy giữ một ngưỡng sàn.
+
+## Ánh sáng và bóng
+
+Một `DirectionalLight` điều khiển cả phần đổ bóng lẫn shadow map:
+
+```cpp
+renderer::DirectionalLight sun{
+    .direction = {-0.4f, -1.0f, -0.5f},   // hướng ánh sáng ĐI TỚI, không phải hướng nhìn về nguồn
+    .color     = {1.0f, 0.98f, 0.92f},
+    .intensity = 3.0f,
+    .ambient   = {0.2f, 0.22f, 0.28f},
+
+    // Shadow map là một hộp trực giao quanh điểm này. Nó KHÔNG phải cascade:
+    // một hộp duy nhất phủ toàn bộ vùng có bóng, nên hộp càng nhỏ thì độ phân giải càng cao.
+    .shadowTarget   = {0.0f, 0.0f, 0.0f},
+    .shadowExtent   = 16.0f,
+    .shadowDistance = 40.0f,
+};
+```
+
+Bóng được lọc bằng PCF. Vấn đề hay gặp nhất là **acne** — một bề mặt tự đổ bóng lên chính nó thành các
+vân moiré — và cách chữa gần như luôn là **thu nhỏ `shadowExtent`**: cái hộp có độ phân giải cố định,
+nên nhân đôi kích thước hộp là chia đôi mật độ texel dưới mọi thứ nằm trong đó.
+
+## Post-processing
+
+Chuỗi này là HDR: scene render vào một target dấu phẩy động, và tonemap là bước kéo nó trở về dải hiển
+thị ở cuối.
+
+1. **Bright pass** — trích ra phần vượt ngưỡng bloom.
+2. **Blur** — tách rời, hai lượt.
+3. **Composite** — cộng ngược trở lại, theo kiểu additive.
+4. **Tonemap** — ACES, từ HDR về LDR.
+5. **FXAA** — một pass khử răng cưa rẻ tiền. Pipeline **không có** MSAA.
+
+```cpp
+renderer::PostProcess post{app.device(), hdrFormat, swapchainFormat};
+```
+
+<Callout type="info">
+  Bloom trên một pipeline HDR hành xử khác hẳn bloom trên LDR. Không gì "cháy sáng" trừ khi nó **thật sự**
+  sáng hơn màu trắng — nên một nguồn sáng có `intensity = 1.0` sẽ **không bao giờ** bloom, dù bạn chỉnh
+  ngưỡng thế nào. Điều đó là đúng, và đó là lý do mặt trời ở trên được đặt bằng 3.
+</Callout>
