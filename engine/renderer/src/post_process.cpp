@@ -29,11 +29,14 @@ struct PostPush { f32 v[4]; };
 // A fullscreen post pipeline: no vertex buffer, samples one texture at set 0.
 rhi::PipelineHandle makeFullscreen(rhi::IGraphicsDevice& device,
                                    const unsigned char* frag, unsigned long fragSize,
+                                   const char* fragWgsl,
                                    rhi::Format colorFormat, bool additive,
                                    const char* name) {
     rhi::GraphicsPipelineDesc pd;
     pd.vertexSpirv        = toBytes(fullscreen_vert_spv, fullscreen_vert_spv_size);
     pd.fragmentSpirv      = toBytes(frag, fragSize);
+    pd.vertexWgsl         = fullscreen_vert_spv_wgsl;
+    pd.fragmentWgsl       = fragWgsl;
     pd.colorFormat        = colorFormat;
     pd.hasMaterialTexture = true;
     pd.additiveBlend      = additive;
@@ -48,14 +51,19 @@ PostProcess::PostProcess(rhi::IGraphicsDevice& device, rhi::Format hdrFormat,
                          rhi::Format outputFormat)
     : m_device(device), m_hdrFormat(hdrFormat), m_outputFormat(outputFormat) {
     m_bright    = makeFullscreen(device, bright_frag_spv, bright_frag_spv_size,
+                                 bright_frag_spv_wgsl,
                                  hdrFormat, false, "bloom_bright");
     m_blur      = makeFullscreen(device, blur_frag_spv, blur_frag_spv_size,
+                                 blur_frag_spv_wgsl,
                                  hdrFormat, false, "bloom_blur");
     m_composite = makeFullscreen(device, composite_frag_spv, composite_frag_spv_size,
+                                 composite_frag_spv_wgsl,
                                  hdrFormat, true, "bloom_composite");
     m_tonemap   = makeFullscreen(device, tonemap_frag_spv, tonemap_frag_spv_size,
+                                 tonemap_frag_spv_wgsl,
                                  outputFormat, false, "tonemap");
     m_fxaa      = makeFullscreen(device, fxaa_frag_spv, fxaa_frag_spv_size,
+                                 fxaa_frag_spv_wgsl,
                                  outputFormat, false, "fxaa");
 }
 

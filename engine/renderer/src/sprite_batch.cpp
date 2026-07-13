@@ -40,6 +40,8 @@ SpriteBatch::SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, 
     rhi::GraphicsPipelineDesc pd;
     pd.vertexSpirv         = toBytes(sprite_vert_spv, sprite_vert_spv_size);
     pd.fragmentSpirv       = toBytes(sprite_frag_spv, sprite_frag_spv_size);
+    pd.vertexWgsl          = sprite_vert_spv_wgsl;
+    pd.fragmentWgsl        = sprite_frag_spv_wgsl;
     pd.vertexLayout.stride = sizeof(Vertex);
     pd.vertexLayout.attributes = {
         {.location = 0, .format = rhi::VertexFormat::Float2, .offset = offsetof(Vertex, pos)},

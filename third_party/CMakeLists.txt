@@ -103,15 +103,18 @@ if (VORTEX_RHI_WITH_WEBGPU)
             "Add the matching archive URL/hash for ${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}.")
     endif ()
 
+    # v29 is the first line that ships the *standard* webgpu.h (WGPUStringView, future-based
+    # callbacks). Older releases carried a pre-standard header that no browser implements, which
+    # is why the browser port forced this upgrade.
     FetchContent_Declare(wgpu_native
-            URL      https://github.com/gfx-rs/wgpu-native/releases/download/v0.19.4.1/wgpu-linux-x86_64-release.zip
-            URL_HASH SHA256=7d73bd7af2be60b632e5ab814996acb381d1b459975d6629f91c468049c8866a)
+            URL      https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-linux-x86_64-release.zip
+            URL_HASH SHA256=95a4d90c071005a98d03eab348beaa6b07e16eb00d1dcdb9f8348f75eb97ec5a)
     FetchContent_MakeAvailable(wgpu_native)
 
     add_library(vortex_webgpu_deps INTERFACE)
-    target_include_directories(vortex_webgpu_deps INTERFACE ${wgpu_native_SOURCE_DIR})
+    target_include_directories(vortex_webgpu_deps INTERFACE ${wgpu_native_SOURCE_DIR}/include)
     target_link_libraries(vortex_webgpu_deps INTERFACE
-            ${wgpu_native_SOURCE_DIR}/libwgpu_native.so)
+            ${wgpu_native_SOURCE_DIR}/lib/libwgpu_native.so)
     target_link_options(vortex_webgpu_deps INTERFACE
-            "-Wl,-rpath,${wgpu_native_SOURCE_DIR}")
+            "-Wl,-rpath,${wgpu_native_SOURCE_DIR}/lib")
 endif ()

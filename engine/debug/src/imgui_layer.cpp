@@ -86,6 +86,8 @@ void ImGuiLayer::createDeviceObjects(rhi::Format colorFormat) {
     rhi::GraphicsPipelineDesc pd;
     pd.vertexSpirv         = toBytes(imgui_vert_spv, imgui_vert_spv_size);
     pd.fragmentSpirv       = toBytes(imgui_frag_spv, imgui_frag_spv_size);
+    pd.vertexWgsl          = imgui_vert_spv_wgsl;
+    pd.fragmentWgsl        = imgui_frag_spv_wgsl;
     pd.vertexLayout.stride = sizeof(ImDrawVert);
     pd.vertexLayout.attributes = {
         {.location = 0, .format = rhi::VertexFormat::Float2,   .offset = offsetof(ImDrawVert, pos)},

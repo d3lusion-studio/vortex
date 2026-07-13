@@ -6,12 +6,13 @@
 #include <cstdint>
 
 namespace vortex::rhi::wgpu {
-    WGPUSurface createWGPUSurface(WGPUInstance instance, pf::NativeHandleKind kind,
+
+WGPUSurface createWGPUSurface(WGPUInstance instance, pf::NativeHandleKind kind,
                               void* display, void* window) {
     switch (kind) {
         case pf::NativeHandleKind::Xlib: {
-            WGPUSurfaceDescriptorFromXlibWindow x{};
-            x.chain.sType = WGPUSType_SurfaceDescriptorFromXlibWindow;
+            WGPUSurfaceSourceXlibWindow x{};
+            x.chain.sType = WGPUSType_SurfaceSourceXlibWindow;
             x.display     = display;
             x.window      = static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(window));
             WGPUSurfaceDescriptor sd{};
@@ -19,8 +20,8 @@ namespace vortex::rhi::wgpu {
             return wgpuInstanceCreateSurface(instance, &sd);
         }
         case pf::NativeHandleKind::Wayland: {
-            WGPUSurfaceDescriptorFromWaylandSurface w{};
-            w.chain.sType = WGPUSType_SurfaceDescriptorFromWaylandSurface;
+            WGPUSurfaceSourceWaylandSurface w{};
+            w.chain.sType = WGPUSType_SurfaceSourceWaylandSurface;
             w.display     = display;
             w.surface     = window;
             WGPUSurfaceDescriptor sd{};

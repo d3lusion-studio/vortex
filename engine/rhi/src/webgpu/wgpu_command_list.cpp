@@ -14,7 +14,9 @@ void WebGPUCommandList::beginRenderPass(const RenderPassDesc& desc) {
     WebGPUTexture* color = m_device->getTexture(desc.color.target);
     if (!color || !color->view) return;
 
-    WGPURenderPassColorAttachment ca{};
+    // Must use the INIT macro, not {}: a zero-initialised depthSlice reads as "slice 0", and the
+    // validator then rejects a 2D view for having been given a 3D-only parameter.
+    WGPURenderPassColorAttachment ca = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
     ca.view       = color->view;
     ca.loadOp     = toWGPULoadOp(desc.color.loadOp);
     ca.storeOp    = toWGPUStoreOp(desc.color.storeOp);
@@ -133,8 +135,14 @@ void WebGPUCommandList::doBindGroup(u32 slot, BindGroupHandle h) {
 }
 
 void WebGPUCommandList::doPush(const void* data, u32 size) {
-    wgpuRenderPassEncoderSetPushConstants(
-        m_encoder, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment, 0, size, data);
+    // WebGPU has no push constants. The block goes into the device's per-frame uniform ring, and
+    // the draw reads it through a dynamic offset into a bind group at the reserved group index —
+    // which is exactly where the WebGPU shader variant declares it (set 3).
+    const u32 offset = m_device->writePushConstants(data, size);
+    if (offset == UINT32_MAX) return;   // ring exhausted; skip rather than draw with stale data
+
+    wgpuRenderPassEncoderSetBindGroup(m_encoder, kPushConstantGroup, m_device->pushBindGroup(),
+                                      1, &offset);
 }
 
 void WebGPUCommandList::doViewport(const Viewport& vp) {

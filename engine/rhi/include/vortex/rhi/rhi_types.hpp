@@ -4,6 +4,7 @@
 #include "vortex/rhi/rhi_handle.hpp"
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace vortex::rhi {
@@ -64,8 +65,14 @@ struct VertexLayout {
 };
 
 struct GraphicsPipelineDesc {
+    // Every pipeline carries its shaders in both languages: Vulkan consumes the SPIR-V, WebGPU
+    // consumes the WGSL (browsers accept nothing else). The generated shader headers provide
+    // both from a single GLSL source, so callers fill both unconditionally and the backend
+    // picks. A backend given an empty blob for its language fails loudly at pipeline creation.
     std::vector<std::byte> vertexSpirv;
     std::vector<std::byte> fragmentSpirv;
+    std::string            vertexWgsl;
+    std::string            fragmentWgsl;
     VertexLayout           vertexLayout;
     PrimitiveTopology      topology    = PrimitiveTopology::TriangleList;
     CullMode               cull        = CullMode::None;

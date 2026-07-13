@@ -72,7 +72,16 @@ public:
     [[nodiscard]] TextureHandle registerTexture(const WebGPUTexture&) ;
     void unregisterTexture(TextureHandle);
 
+    /// Push-constant emulation. Copies `size` bytes into this frame's uniform ring buffer and
+    /// returns the dynamic offset the command list must bind at kPushConstantGroup. Returns
+    /// UINT32_MAX if the ring is exhausted (the draw is then skipped rather than reading garbage).
+    [[nodiscard]] u32 writePushConstants(const void* data, u32 size);
+    [[nodiscard]] WGPUBindGroup       pushBindGroup() const { return m_pushBindGroup; }
+    [[nodiscard]] WGPUBindGroupLayout pushBGL()       const { return m_pushBGL; }
+    [[nodiscard]] WGPUBindGroupLayout emptyBGL()      const { return m_emptyBGL; }
+
 private:
+    void createPushConstantRing();
     WGPUInstance m_instance = nullptr;
     WGPUSurface  m_surface  = nullptr;
     WGPUAdapter  m_adapter  = nullptr;
@@ -81,6 +90,18 @@ private:
 
     WGPUBindGroupLayout m_materialBGL = nullptr;   // binding 0: texture, binding 1: sampler
     WGPUBindGroupLayout m_uniformBGL  = nullptr;   // binding 0: uniform buffer (vtx+frag)
+
+    // Push-constant emulation, bound at kPushConstantGroup with a dynamic offset.
+    WGPUBindGroupLayout m_pushBGL       = nullptr;  // one dynamic-offset uniform buffer
+    WGPUBindGroup       m_pushBindGroup = nullptr;
+    WGPUBuffer          m_pushRing      = nullptr;
+    u64                 m_pushRingSize  = 0;
+    u64                 m_pushRingHead  = 0;        // reset every frame
+    u32                 m_pushStride    = 256;      // minUniformBufferOffsetAlignment
+
+    // An empty layout used to fill the gaps: a pipeline layout is indexed by @group, so a shader
+    // that uses group 0 and group 3 still needs *something* at 1 and 2.
+    WGPUBindGroupLayout m_emptyBGL = nullptr;
 
     Pool<WebGPUBuffer,    BufferTag>    m_buffers;
     Pool<WebGPUTexture,   TextureTag>   m_textures;

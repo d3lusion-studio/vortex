@@ -1,14 +1,43 @@
 #pragma once
-// The ONLY place (besides the other webgpu/ sources) allowed to include the
-// wgpu-native headers. Everything above the RHI talks in rhi:: types.
-#include <webgpu.h>
-#include <wgpu.h>
+// The ONLY place (besides the other webgpu/ sources) allowed to include the WebGPU headers.
+// Everything above the RHI talks in rhi:: types.
+//
+// This is the *standard* webgpu.h, and it is the same file on both targets: wgpu-native ships it
+// on desktop, Emscripten's emdawnwebgpu port ships it in the browser. No vendor extension header
+// is included — in particular wgpu-native's <wgpu.h> is deliberately absent, because nothing in
+// it (push constants, wgpuDevicePoll, log callbacks) exists in a browser.
+#include <webgpu/webgpu.h>
 
 #include "vortex/core/log.hpp"
 #include "vortex/rhi/rhi_enums.hpp"
 #include "vortex/rhi/rhi_types.hpp"
 
+#include <cstring>
+#include <string_view>
+
 namespace vortex::rhi::wgpu {
+
+// WebGPU has no push constants. The backend emulates ICommandList::pushConstants() by suballocating
+// from a per-frame uniform ring buffer and binding it at a reserved group with a dynamic offset.
+// Shaders compiled for WebGPU declare that block at set 3 (see cmake/VortexShaders.cmake).
+inline constexpr u32 kPushConstantGroup   = 3;
+inline constexpr u32 kMaxPushConstantSize = 128;   // matches the Vulkan backend's guaranteed minimum
+
+/// The modern API passes strings as (pointer, length) pairs rather than NUL-terminated char*.
+[[nodiscard]] inline WGPUStringView strView(const char* s) {
+    if (!s) return WGPUStringView{nullptr, WGPU_STRLEN};
+    return WGPUStringView{s, std::strlen(s)};
+}
+
+[[nodiscard]] inline WGPUStringView strView(std::string_view s) {
+    return WGPUStringView{s.data(), s.size()};
+}
+
+/// WGPUStringView -> printable C string, for logging. Not NUL-terminated in general.
+[[nodiscard]] inline std::string_view fromStrView(WGPUStringView s) {
+    if (!s.data) return {};
+    return s.length == WGPU_STRLEN ? std::string_view{s.data} : std::string_view{s.data, s.length};
+}
 
 [[nodiscard]] inline WGPUTextureFormat toWGPUFormat(Format f) {
     switch (f) {

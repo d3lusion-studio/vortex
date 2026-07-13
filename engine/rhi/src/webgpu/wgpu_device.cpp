@@ -12,35 +12,57 @@ namespace vortex::rhi::wgpu {
 
 namespace {
 
-void logCallback(WGPULogLevel level, const char* msg, void*) {
-    switch (level) {
-        case WGPULogLevel_Error: VORTEX_ERROR("wgpu", "%s", msg); break;
-        case WGPULogLevel_Warn:  VORTEX_WARN("wgpu", "%s", msg);  break;
-        default:                 VORTEX_INFO("wgpu", "%s", msg);  break;
-    }
-}
-
-void errorCallback(WGPUErrorType type, const char* msg, void*) {
-    VORTEX_ERROR("wgpu", "uncaptured error (type %d): %s", static_cast<int>(type), msg);
+void errorCallback(WGPUDevice const*, WGPUErrorType type, WGPUStringView msg, void*, void*) {
+    const std::string_view text = fromStrView(msg);
+    VORTEX_ERROR("wgpu", "uncaptured error (type %d): %.*s", static_cast<int>(type),
+                 static_cast<int>(text.size()), text.data());
 }
 
 struct AdapterResult { WGPUAdapter adapter = nullptr; bool done = false; };
-void onAdapter(WGPURequestAdapterStatus status, WGPUAdapter adapter, const char* msg, void* ud) {
+void onAdapter(WGPURequestAdapterStatus status, WGPUAdapter adapter, WGPUStringView msg,
+               void* ud, void*) {
     auto* r = static_cast<AdapterResult*>(ud);
-    if (status == WGPURequestAdapterStatus_Success) r->adapter = adapter;
-    else VORTEX_ERROR("RHI", "wgpu requestAdapter failed: %s", msg ? msg : "?");
+    if (status == WGPURequestAdapterStatus_Success) {
+        r->adapter = adapter;
+    } else {
+        const std::string_view text = fromStrView(msg);
+        VORTEX_ERROR("RHI", "wgpu requestAdapter failed: %.*s",
+                     static_cast<int>(text.size()), text.data());
+    }
     r->done = true;
 }
 
 struct DeviceResult { WGPUDevice device = nullptr; bool done = false; };
-void onDevice(WGPURequestDeviceStatus status, WGPUDevice device, const char* msg, void* ud) {
+void onDevice(WGPURequestDeviceStatus status, WGPUDevice device, WGPUStringView msg,
+              void* ud, void*) {
     auto* r = static_cast<DeviceResult*>(ud);
-    if (status == WGPURequestDeviceStatus_Success) r->device = device;
-    else VORTEX_ERROR("RHI", "wgpu requestDevice failed: %s", msg ? msg : "?");
+    if (status == WGPURequestDeviceStatus_Success) {
+        r->device = device;
+    } else {
+        const std::string_view text = fromStrView(msg);
+        VORTEX_ERROR("RHI", "wgpu requestDevice failed: %.*s",
+                     static_cast<int>(text.size()), text.data());
+    }
     r->done = true;
 }
 
-constexpr u32 kMaxPushConstantSize = 128;
+struct WorkDone { bool done = false; };
+void onWorkDone(WGPUQueueWorkDoneStatus, WGPUStringView, void* ud, void*) {
+    static_cast<WorkDone*>(ud)->done = true;
+}
+
+// Drives the instance until `done` flips.
+//
+// The standard API is asynchronous everywhere. The pre-standard wgpu-native header happened to
+// invoke these callbacks inline, and the old code asserted on exactly that — an assumption that was
+// a property of one implementation, not of the API.
+void pump(WGPUInstance instance, const bool& done) {
+    while (!done) wgpuInstanceProcessEvents(instance);
+}
+
+// Slots the push-constant ring reserves per frame. At the 256-byte alignment most adapters report
+// this is a 1 MiB buffer, allocated once, and far beyond what a frame of sprites pushes.
+constexpr u64 kPushRingSlots = 4096;
 
 }
 
@@ -99,15 +121,7 @@ private:
 // ===========================================================================
 
 WebGPUDevice::WebGPUDevice(pf::IWindow& window) {
-    wgpuSetLogLevel(WGPULogLevel_Warn);
-    wgpuSetLogCallback(logCallback, nullptr);
-
-    WGPUInstanceExtras extras{};
-    extras.chain.sType = static_cast<WGPUSType>(WGPUSType_InstanceExtras);
-    extras.backends    = WGPUInstanceBackend_Primary;   // Vulkan on Linux
-    WGPUInstanceDescriptor instDesc{};
-    instDesc.nextInChain = &extras.chain;
-    m_instance = wgpuCreateInstance(&instDesc);
+    m_instance = wgpuCreateInstance(nullptr);
     if (!m_instance) { VORTEX_ERROR("RHI", "wgpuCreateInstance failed"); return; }
 
     m_surface = createWGPUSurface(m_instance, window.nativeHandleKind(),
@@ -118,42 +132,38 @@ WebGPUDevice::WebGPUDevice(pf::IWindow& window) {
     WGPURequestAdapterOptions opts{};
     opts.compatibleSurface = m_surface;
     opts.powerPreference   = WGPUPowerPreference_HighPerformance;
-    wgpuInstanceRequestAdapter(m_instance, &opts, onAdapter, &ar);
-    VORTEX_ASSERT(ar.done, "wgpu requestAdapter is expected to be synchronous in wgpu-native");
+
+    WGPURequestAdapterCallbackInfo adapterCb{};
+    adapterCb.mode      = WGPUCallbackMode_AllowProcessEvents;
+    adapterCb.callback  = onAdapter;
+    adapterCb.userdata1 = &ar;
+    wgpuInstanceRequestAdapter(m_instance, &opts, adapterCb);
+    pump(m_instance, ar.done);
     m_adapter = ar.adapter;
     if (!m_adapter) return;
 
-    // Require the push-constant native feature + a generous push-constant size,
-    // since the engine's sprite/post pipelines use push constants.
-    WGPUNativeLimits nativeLimits{};
-    nativeLimits.maxPushConstantSize = kMaxPushConstantSize;
-    WGPURequiredLimitsExtras limitsExtras{};
-    limitsExtras.chain.sType = static_cast<WGPUSType>(WGPUSType_RequiredLimitsExtras);
-    limitsExtras.limits      = nativeLimits;
-
-    // Require exactly what the adapter supports. Zero-initialised alignment
-    // limits would be rejected ("0 is better than allowed"), since alignment
-    // limits are inverted — requesting the adapter's values is always valid.
-    WGPUSupportedLimits supported{};
+    // Request exactly what the adapter supports. Zero-initialised alignment limits would be
+    // rejected ("0 is better than allowed") — alignment limits are inverted, so echoing the
+    // adapter's own values back is always valid.
+    WGPULimits supported = WGPU_LIMITS_INIT;
     wgpuAdapterGetLimits(m_adapter, &supported);
-    WGPURequiredLimits requiredLimits{};
-    requiredLimits.nextInChain = &limitsExtras.chain;
-    requiredLimits.limits      = supported.limits;
-
-    const WGPUFeatureName features[] = {
-        static_cast<WGPUFeatureName>(WGPUNativeFeature_PushConstants)};
+    m_pushStride = supported.minUniformBufferOffsetAlignment;
+    if (m_pushStride < kMaxPushConstantSize) m_pushStride = kMaxPushConstantSize;
 
     DeviceResult dr{};
-    WGPUDeviceDescriptor devDesc{};
-    devDesc.requiredFeatureCount = 1;
-    devDesc.requiredFeatures     = features;
-    devDesc.requiredLimits       = &requiredLimits;
-    wgpuAdapterRequestDevice(m_adapter, &devDesc, onDevice, &dr);
-    VORTEX_ASSERT(dr.done, "wgpu requestDevice is expected to be synchronous in wgpu-native");
+    WGPUDeviceDescriptor devDesc = WGPU_DEVICE_DESCRIPTOR_INIT;
+    devDesc.requiredLimits = &supported;
+    devDesc.uncapturedErrorCallbackInfo.callback = errorCallback;
+
+    WGPURequestDeviceCallbackInfo deviceCb{};
+    deviceCb.mode      = WGPUCallbackMode_AllowProcessEvents;
+    deviceCb.callback  = onDevice;
+    deviceCb.userdata1 = &dr;
+    wgpuAdapterRequestDevice(m_adapter, &devDesc, deviceCb);
+    pump(m_instance, dr.done);
     m_device = dr.device;
     if (!m_device) return;
 
-    wgpuDeviceSetUncapturedErrorCallback(m_device, errorCallback, nullptr);
     m_queue = wgpuDeviceGetQueue(m_device);
 
     // Shared material bind-group layout: texture (0) + sampler (1), fragment stage.
@@ -180,11 +190,78 @@ WebGPUDevice::WebGPUDevice(pf::IWindow& window) {
     uboBglDesc.entries    = &uboEntry;
     m_uniformBGL = wgpuDeviceCreateBindGroupLayout(m_device, &uboBglDesc);
 
-    VORTEX_INFO("RHI", "WebGPU device initialised (wgpu-native)");
+    // A layout with no bindings, used to plug the holes in pipeline layouts (see m_emptyBGL).
+    WGPUBindGroupLayoutDescriptor emptyDesc{};
+    m_emptyBGL = wgpuDeviceCreateBindGroupLayout(m_device, &emptyDesc);
+
+    createPushConstantRing();
+
+    VORTEX_INFO("RHI", "WebGPU device initialised");
+}
+
+void WebGPUDevice::createPushConstantRing() {
+    m_pushRingSize = static_cast<u64>(m_pushStride) * kPushRingSlots;
+
+    WGPUBufferDescriptor bd = WGPU_BUFFER_DESCRIPTOR_INIT;
+    bd.label = strView("push_constant_ring");
+    bd.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+    bd.size  = m_pushRingSize;
+    m_pushRing = wgpuDeviceCreateBuffer(m_device, &bd);
+
+    // One dynamic-offset uniform binding: a single bind group serves every push in the frame, and
+    // only the offset changes from draw to draw.
+    WGPUBindGroupLayoutEntry entry{};
+    entry.binding                 = 0;
+    entry.visibility              = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    entry.buffer.type             = WGPUBufferBindingType_Uniform;
+    entry.buffer.hasDynamicOffset = true;
+    entry.buffer.minBindingSize   = kMaxPushConstantSize;
+
+    WGPUBindGroupLayoutDescriptor bglDesc{};
+    bglDesc.entryCount = 1;
+    bglDesc.entries    = &entry;
+    m_pushBGL = wgpuDeviceCreateBindGroupLayout(m_device, &bglDesc);
+
+    WGPUBindGroupEntry bge{};
+    bge.binding = 0;
+    bge.buffer  = m_pushRing;
+    bge.offset  = 0;
+    bge.size    = kMaxPushConstantSize;
+
+    WGPUBindGroupDescriptor bgd{};
+    bgd.layout     = m_pushBGL;
+    bgd.entryCount = 1;
+    bgd.entries    = &bge;
+    m_pushBindGroup = wgpuDeviceCreateBindGroup(m_device, &bgd);
+}
+
+u32 WebGPUDevice::writePushConstants(const void* data, u32 size) {
+    VORTEX_ASSERT(size <= kMaxPushConstantSize, "push constant block exceeds kMaxPushConstantSize");
+    if (size > kMaxPushConstantSize) return UINT32_MAX;
+
+    if (m_pushRingHead + m_pushStride > m_pushRingSize) {
+        static bool warned = false;
+        if (!warned) {
+            VORTEX_WARN("RHI", "push-constant ring exhausted this frame; draws will be skipped");
+            warned = true;
+        }
+        return UINT32_MAX;
+    }
+
+    const u64 offset = m_pushRingHead;
+    m_pushRingHead += m_pushStride;
+
+    // The binding is minBindingSize bytes wide regardless of how few the caller pushed, so the
+    // slot is written whole — a short write would leave the tail as stale data from last frame.
+    u8 staging[kMaxPushConstantSize]{};
+    std::memcpy(staging, data, size);
+    wgpuQueueWriteBuffer(m_queue, m_pushRing, offset, staging, kMaxPushConstantSize);
+
+    return static_cast<u32>(offset);
 }
 
 WebGPUDevice::~WebGPUDevice() {
-    if (m_device) wgpuDevicePoll(m_device, true, nullptr);
+    waitIdle();
 
     m_pipelines.forEachAlive([](WebGPUPipeline& p) {
         if (p.pipeline) wgpuRenderPipelineRelease(p.pipeline);
@@ -205,8 +282,12 @@ WebGPUDevice::~WebGPUDevice() {
         if (b.buffer) { wgpuBufferDestroy(b.buffer); wgpuBufferRelease(b.buffer); }
     });
 
-    if (m_materialBGL) wgpuBindGroupLayoutRelease(m_materialBGL);
-    if (m_uniformBGL)  wgpuBindGroupLayoutRelease(m_uniformBGL);
+    if (m_pushBindGroup) wgpuBindGroupRelease(m_pushBindGroup);
+    if (m_pushRing)      { wgpuBufferDestroy(m_pushRing); wgpuBufferRelease(m_pushRing); }
+    if (m_pushBGL)       wgpuBindGroupLayoutRelease(m_pushBGL);
+    if (m_emptyBGL)      wgpuBindGroupLayoutRelease(m_emptyBGL);
+    if (m_materialBGL)   wgpuBindGroupLayoutRelease(m_materialBGL);
+    if (m_uniformBGL)    wgpuBindGroupLayoutRelease(m_uniformBGL);
     if (m_queue)    wgpuQueueRelease(m_queue);
     if (m_device)   wgpuDeviceRelease(m_device);
     if (m_adapter)  wgpuAdapterRelease(m_adapter);
@@ -219,7 +300,7 @@ WebGPUDevice::~WebGPUDevice() {
 // ===========================================================================
 
 BufferHandle WebGPUDevice::createBuffer(const BufferDesc& desc, const void* initialData) {
-    WGPUBufferUsageFlags usage = WGPUBufferUsage_CopyDst;   // allow updateBuffer()
+    WGPUBufferUsage usage = WGPUBufferUsage_CopyDst;   // allow updateBuffer()
     if (hasFlag(desc.usage, BufferUsage::Vertex))  usage |= WGPUBufferUsage_Vertex;
     if (hasFlag(desc.usage, BufferUsage::Index))   usage |= WGPUBufferUsage_Index;
     if (hasFlag(desc.usage, BufferUsage::Uniform)) usage |= WGPUBufferUsage_Uniform;
@@ -228,8 +309,8 @@ BufferHandle WebGPUDevice::createBuffer(const BufferDesc& desc, const void* init
 
     const u64 size = (desc.size + 3) & ~u64{3};   // WebGPU requires 4-byte sizes
 
-    WGPUBufferDescriptor bd{};
-    bd.label            = desc.debugName;
+    WGPUBufferDescriptor bd = WGPU_BUFFER_DESCRIPTOR_INIT;
+    bd.label            = strView(desc.debugName);
     bd.usage            = usage;
     bd.size             = size;
     bd.mappedAtCreation = initialData != nullptr;
@@ -268,7 +349,7 @@ void WebGPUDevice::updateBuffer(BufferHandle h, const void* data, u64 size, u64 
 TextureHandle WebGPUDevice::createTexture(const TextureDesc& desc, const void* pixels) {
     const bool depth = isDepthFormat(desc.format) || hasFlag(desc.usage, TextureUsage::DepthStencil);
 
-    WGPUTextureUsageFlags usage = 0;
+    WGPUTextureUsage usage = WGPUTextureUsage_None;
     if (depth) {
         usage = WGPUTextureUsage_RenderAttachment;
         if (hasFlag(desc.usage, TextureUsage::Sampled)) usage |= WGPUTextureUsage_TextureBinding;
@@ -285,8 +366,8 @@ TextureHandle WebGPUDevice::createTexture(const TextureDesc& desc, const void* p
     tex.height  = desc.height;
     tex.isDepth = depth;
 
-    WGPUTextureDescriptor td{};
-    td.label         = desc.debugName;
+    WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    td.label         = strView(desc.debugName);
     td.usage         = usage;
     td.dimension     = WGPUTextureDimension_2D;
     td.size          = {desc.width, desc.height, 1};
@@ -296,10 +377,10 @@ TextureHandle WebGPUDevice::createTexture(const TextureDesc& desc, const void* p
     tex.texture      = wgpuDeviceCreateTexture(m_device, &td);
 
     if (pixels) {
-        WGPUImageCopyTexture dst{};
+        WGPUTexelCopyTextureInfo dst = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
         dst.texture = tex.texture;
         dst.aspect  = WGPUTextureAspect_All;
-        WGPUTextureDataLayout layout{};
+        WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
         layout.bytesPerRow  = desc.width * 4;
         layout.rowsPerImage = desc.height;
         WGPUExtent3D ext{desc.width, desc.height, 1};
@@ -327,7 +408,7 @@ void WebGPUDevice::unregisterTexture(TextureHandle h) { m_textures.destroy(h); }
 // ===========================================================================
 
 SamplerHandle WebGPUDevice::createSampler(const SamplerDesc& desc) {
-    WGPUSamplerDescriptor sd{};
+    WGPUSamplerDescriptor sd = WGPU_SAMPLER_DESCRIPTOR_INIT;
     sd.addressModeU = toWGPUAddress(desc.addressU);
     sd.addressModeV = toWGPUAddress(desc.addressV);
     sd.addressModeW = WGPUAddressMode_ClampToEdge;
@@ -410,48 +491,53 @@ void WebGPUDevice::destroyBindGroup(BindGroupHandle h) {
 // ===========================================================================
 
 PipelineHandle WebGPUDevice::createGraphicsPipeline(const GraphicsPipelineDesc& desc) {
-    auto makeModule = [&](const std::vector<std::byte>& spirv) -> WGPUShaderModule {
-        WGPUShaderModuleSPIRVDescriptor sp{};
-        sp.chain.sType = WGPUSType_ShaderModuleSPIRVDescriptor;
-        sp.codeSize    = static_cast<u32>(spirv.size() / 4);
-        sp.code        = reinterpret_cast<const u32*>(spirv.data());
-        WGPUShaderModuleDescriptor smd{};
-        smd.nextInChain = &sp.chain;
+    // WebGPU consumes WGSL only: SPIR-V is a Vulkan-side detail, and browsers reject it outright.
+    // The shader build transpiles every stage to both languages (see cmake/VortexShaders.cmake).
+    if (desc.vertexWgsl.empty() || desc.fragmentWgsl.empty()) {
+        VORTEX_ERROR("RHI", "WebGPU pipeline '%s' has no WGSL; the shader was never transpiled",
+                     desc.debugName ? desc.debugName : "?");
+        return {};
+    }
+
+    auto makeModule = [&](const std::string& wgsl) -> WGPUShaderModule {
+        WGPUShaderSourceWGSL src = WGPU_SHADER_SOURCE_WGSL_INIT;
+        src.code = strView(wgsl);
+        WGPUShaderModuleDescriptor smd = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
+        smd.nextInChain = &src.chain;
         return wgpuDeviceCreateShaderModule(m_device, &smd);
     };
-    WGPUShaderModule vs = makeModule(desc.vertexSpirv);
-    WGPUShaderModule fs = makeModule(desc.fragmentSpirv);
+    WGPUShaderModule vs = makeModule(desc.vertexWgsl);
+    WGPUShaderModule fs = makeModule(desc.fragmentWgsl);
 
-    // Pipeline layout: optional material bind group + optional push constants.
-    WGPUPushConstantRange pcRange{};
-    pcRange.stages = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-    pcRange.start  = 0;
-    pcRange.end    = desc.pushConstantSize;
-    WGPUPipelineLayoutExtras layoutExtras{};
-    layoutExtras.chain.sType            = static_cast<WGPUSType>(WGPUSType_PipelineLayoutExtras);
-    layoutExtras.pushConstantRangeCount = 1;
-    layoutExtras.pushConstantRanges     = &pcRange;
-
-    // Bind group layouts in order: material set (if any) then uniform set (if any).
-    WGPUBindGroupLayout bgls[2];
+    // A pipeline layout is indexed by @group, so the array must be dense: a shader that binds its
+    // material at 0 and its (emulated) push constants at 3 still needs placeholders at 1 and 2.
+    WGPUBindGroupLayout bgls[kPushConstantGroup + 1];
     u32 bglCount = 0;
     if (desc.hasMaterialTexture) bgls[bglCount++] = m_materialBGL;
     if (desc.hasUniformBuffer)   bgls[bglCount++] = m_uniformBGL;
-    WGPUPipelineLayoutDescriptor pld{};
-    if (desc.pushConstantSize > 0) pld.nextInChain = &layoutExtras.chain;
-    if (bglCount > 0) {
-        pld.bindGroupLayoutCount = bglCount;
-        pld.bindGroupLayouts     = bgls;
+
+    if (desc.pushConstantSize > 0) {
+        while (bglCount < kPushConstantGroup) bgls[bglCount++] = m_emptyBGL;
+        bgls[bglCount++] = m_pushBGL;
     }
+
+    WGPUPipelineLayoutDescriptor pld = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    pld.bindGroupLayoutCount = bglCount;
+    pld.bindGroupLayouts     = bglCount > 0 ? bgls : nullptr;
     WGPUPipelineLayout layout = wgpuDeviceCreatePipelineLayout(m_device, &pld);
 
     // Vertex layout.
     std::vector<WGPUVertexAttribute> attrs;
     attrs.reserve(desc.vertexLayout.attributes.size());
-    for (const VertexAttribute& a : desc.vertexLayout.attributes)
-        attrs.push_back({toWGPUVertexFormat(a.format), a.offset, a.location});
+    for (const VertexAttribute& a : desc.vertexLayout.attributes) {
+        WGPUVertexAttribute wa = WGPU_VERTEX_ATTRIBUTE_INIT;
+        wa.format         = toWGPUVertexFormat(a.format);
+        wa.offset         = a.offset;
+        wa.shaderLocation = a.location;
+        attrs.push_back(wa);
+    }
 
-    WGPUVertexBufferLayout vbl{};
+    WGPUVertexBufferLayout vbl = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
     vbl.arrayStride    = desc.vertexLayout.stride;
     vbl.stepMode       = WGPUVertexStepMode_Vertex;
     vbl.attributeCount = attrs.size();
@@ -459,11 +545,11 @@ PipelineHandle WebGPUDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
 
     const bool hasVertices = desc.vertexLayout.stride > 0;
 
-    WGPURenderPipelineDescriptor pd{};
-    pd.label          = desc.debugName;
-    pd.layout         = layout;
+    WGPURenderPipelineDescriptor pd = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    pd.label              = strView(desc.debugName);
+    pd.layout             = layout;
     pd.vertex.module      = vs;
-    pd.vertex.entryPoint  = "main";
+    pd.vertex.entryPoint  = strView("main");
     pd.vertex.bufferCount = hasVertices ? 1u : 0u;
     pd.vertex.buffers     = hasVertices ? &vbl : nullptr;
 
@@ -475,15 +561,12 @@ PipelineHandle WebGPUDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     pd.multisample.mask  = 0xFFFFFFFFu;
 
     // Depth-stencil.
-    WGPUDepthStencilState ds{};
+    WGPUDepthStencilState ds = WGPU_DEPTH_STENCIL_STATE_INIT;
     if (desc.depthFormat != Format::Undefined) {
         ds.format            = toWGPUFormat(desc.depthFormat);
-        ds.depthWriteEnabled = desc.depthWrite;
+        ds.depthWriteEnabled = desc.depthWrite ? WGPUOptionalBool_True : WGPUOptionalBool_False;
         ds.depthCompare      = desc.depthTest ? toWGPUCompare(desc.depthCompare)
                                               : WGPUCompareFunction_Always;
-        ds.stencilFront = {WGPUCompareFunction_Always, WGPUStencilOperation_Keep,
-                           WGPUStencilOperation_Keep, WGPUStencilOperation_Keep};
-        ds.stencilBack  = ds.stencilFront;
         pd.depthStencil = &ds;
     }
 
@@ -492,17 +575,24 @@ PipelineHandle WebGPUDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     blend.color = {WGPUBlendOperation_Add, WGPUBlendFactor_SrcAlpha, WGPUBlendFactor_OneMinusSrcAlpha};
     blend.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_OneMinusSrcAlpha};
 
-    WGPUColorTargetState colorTarget{};
+    WGPUBlendState additive{};
+    additive.color = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_One};
+    additive.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_One};
+
+    WGPUColorTargetState colorTarget = WGPU_COLOR_TARGET_STATE_INIT;
     colorTarget.format    = toWGPUFormat(desc.colorFormat);
     colorTarget.writeMask = WGPUColorWriteMask_All;
-    colorTarget.blend     = desc.alphaBlend ? &blend : nullptr;
+    if (desc.additiveBlend)    colorTarget.blend = &additive;
+    else if (desc.alphaBlend)  colorTarget.blend = &blend;
 
-    WGPUFragmentState fragment{};
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module      = fs;
-    fragment.entryPoint  = "main";
+    fragment.entryPoint  = strView("main");
     fragment.targetCount = 1;
     fragment.targets     = &colorTarget;
-    pd.fragment = &fragment;
+
+    // A depth-only pass (the shadow map) has no colour attachment at all.
+    if (desc.colorFormat != Format::Undefined) pd.fragment = &fragment;
 
     WebGPUPipeline pipeline{};
     pipeline.layout           = layout;
@@ -527,14 +617,13 @@ void WebGPUDevice::destroyPipeline(PipelineHandle h) {
 // ===========================================================================
 
 std::unique_ptr<ISwapchain> WebGPUDevice::createSwapchain(const SwapchainDesc& desc, pf::IWindow&) {
-    // Pick a surface format: prefer BGRA8Unorm (matches the Vulkan backend's
-    // typical swapchain format) for image parity, else the surface's preferred.
+    // Take the surface's *preferred* format, which is always first. Forcing BGRA8Unorm for parity
+    // with Vulkan costs a full-surface copy every frame in the browser, where the canvas prefers
+    // RGBA8Unorm — and the swapchain format is not something anything above the RHI can see.
     WGPUSurfaceCapabilities caps{};
     wgpuSurfaceGetCapabilities(m_surface, m_adapter, &caps);
-    WGPUTextureFormat chosen = caps.formatCount > 0 ? caps.formats[0]
-                                                    : WGPUTextureFormat_BGRA8Unorm;
-    for (usize i = 0; i < caps.formatCount; ++i)
-        if (caps.formats[i] == WGPUTextureFormat_BGRA8Unorm) { chosen = WGPUTextureFormat_BGRA8Unorm; break; }
+    const WGPUTextureFormat chosen = caps.formatCount > 0 ? caps.formats[0]
+                                                          : WGPUTextureFormat_BGRA8Unorm;
     wgpuSurfaceCapabilitiesFreeMembers(caps);
 
     return std::make_unique<WebGPUSwapchain>(*this, m_surface, desc, chosen);
@@ -548,11 +637,17 @@ FrameContext WebGPUDevice::beginFrame(ISwapchain& scBase) {
 
     WGPUSurfaceTexture st{};
     wgpuSurfaceGetCurrentTexture(sc.surface(), &st);
-    if (st.status != WGPUSurfaceGetCurrentTextureStatus_Success) {
+
+    // Suboptimal still hands back a usable texture — the surface merely wants reconfiguring, which
+    // is the normal state for one frame after a resize. Anything else does not.
+    const bool suboptimal = st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal;
+    const bool usable     = st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal || suboptimal;
+    if (!usable) {
         if (st.texture) wgpuTextureRelease(st.texture);
         sc.markNeedsConfigure();
         return fc;
     }
+    if (suboptimal) sc.markNeedsConfigure();
 
     WebGPUTexture backbuffer{};
     backbuffer.texture     = st.texture;
@@ -569,6 +664,10 @@ FrameContext WebGPUDevice::beginFrame(ISwapchain& scBase) {
     m_frameSwapchain = &sc;
     m_frameActive    = true;
     m_secondaryNext.store(0, std::memory_order_relaxed);
+
+    // Every frame restarts at the bottom of the push-constant ring. Safe because the previous
+    // frame's command buffer was already submitted, and queue writes are ordered against it.
+    m_pushRingHead = 0;
 
     fc.cmd        = &m_primary;
     fc.backbuffer = m_frameBackbuffer;
@@ -596,12 +695,20 @@ void WebGPUDevice::endFrame() {
     unregisterTexture(m_frameBackbuffer);
     if (m_frameSurfaceTex) { wgpuTextureRelease(m_frameSurfaceTex); m_frameSurfaceTex = nullptr; }
 
-    wgpuDevicePoll(m_device, false, nullptr);
+    wgpuInstanceProcessEvents(m_instance);
     m_frameActive = false;
 }
 
 void WebGPUDevice::waitIdle() {
-    if (m_device) wgpuDevicePoll(m_device, true, nullptr);
+    if (!m_device || !m_queue) return;
+
+    WorkDone wd{};
+    WGPUQueueWorkDoneCallbackInfo cb{};
+    cb.mode      = WGPUCallbackMode_AllowProcessEvents;
+    cb.callback  = onWorkDone;
+    cb.userdata1 = &wd;
+    wgpuQueueOnSubmittedWorkDone(m_queue, cb);
+    pump(m_instance, wd.done);
 }
 
 // ===========================================================================

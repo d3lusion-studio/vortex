@@ -4,7 +4,14 @@ layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aUV;
 layout(location = 2) in vec4 aColor;   // UNORM4x8 -> [0,1] vec4
 
+// WebGPU (and thus the browser) has no push constants. The WebGPU shader variant is
+// compiled with VORTEX_NO_PUSH_CONSTANTS and this block becomes a uniform buffer in the
+// reserved set 3, which the RHI fills from a ring buffer on every pushConstants() call.
+#ifdef VORTEX_NO_PUSH_CONSTANTS
+layout(set = 3, binding = 0, std140) uniform PushConstants {
+#else
 layout(push_constant) uniform PushConstants {
+#endif
     vec2 uScale;
     vec2 uTranslate;
 } pc;

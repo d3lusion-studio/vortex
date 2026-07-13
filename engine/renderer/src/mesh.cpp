@@ -199,6 +199,8 @@ MeshRenderer::MeshRenderer(rhi::IGraphicsDevice& device, rhi::Format colorFormat
     rhi::GraphicsPipelineDesc pd;
     pd.vertexSpirv         = toBytes(mesh_vert_spv, mesh_vert_spv_size);
     pd.fragmentSpirv       = toBytes(mesh_frag_spv, mesh_frag_spv_size);
+    pd.vertexWgsl          = mesh_vert_spv_wgsl;
+    pd.fragmentWgsl        = mesh_frag_spv_wgsl;
     pd.vertexLayout.stride = sizeof(MeshVertex);
     pd.vertexLayout.attributes = {
         {.location = 0, .format = rhi::VertexFormat::Float3, .offset = offsetof(MeshVertex, position)},
@@ -225,6 +227,8 @@ MeshRenderer::MeshRenderer(rhi::IGraphicsDevice& device, rhi::Format colorFormat
     rhi::GraphicsPipelineDesc sd;
     sd.vertexSpirv         = toBytes(shadow_vert_spv, shadow_vert_spv_size);
     sd.fragmentSpirv       = toBytes(shadow_frag_spv, shadow_frag_spv_size);
+    sd.vertexWgsl          = shadow_vert_spv_wgsl;
+    sd.fragmentWgsl        = shadow_frag_spv_wgsl;
     sd.vertexLayout.stride = sizeof(MeshVertex);
     sd.vertexLayout.attributes = {
         {.location = 0, .format = rhi::VertexFormat::Float3, .offset = offsetof(MeshVertex, position)},
