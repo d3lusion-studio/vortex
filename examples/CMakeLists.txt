@@ -56,11 +56,26 @@ target_link_libraries(ui PRIVATE Vortex::vortex)
 add_executable(physics physics/main.cpp)
 target_link_libraries(physics PRIVATE Vortex::vortex)
 
+add_executable(physics_app physics_app/main.cpp)
+target_link_libraries(physics_app PRIVATE Vortex::vortex)
+
 add_executable(particles particles/main.cpp)
 target_link_libraries(particles PRIVATE Vortex::vortex)
 
 add_executable(tilemap tilemap/main.cpp)
 target_link_libraries(tilemap PRIVATE Vortex::vortex)
+
+# Reads its level straight out of the source tree, so editing level.tmj in Tiled and
+# re-running needs no build step at all.
+add_executable(tiled tiled/main.cpp)
+target_link_libraries(tiled PRIVATE Vortex::vortex)
+target_compile_definitions(tiled PRIVATE VORTEX_TILED_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tiled")
+
+add_executable(input input/main.cpp)
+target_link_libraries(input PRIVATE Vortex::vortex)
+
+add_executable(scenes scenes/main.cpp)
+target_link_libraries(scenes PRIVATE Vortex::vortex)
 
 add_executable(benchmark benchmark/main.cpp)
 target_link_libraries(benchmark PRIVATE Vortex::vortex)

@@ -33,6 +33,17 @@ public:
 
     void destroy(Entity e) { m_registry.destroy(e); }
 
+    // Empty the scene: entities, animation clips, tilemap and live particles. The
+    // registered systems stay — they are code, not content, and a scene swap that
+    // silently unregistered the game's own systems would be a trap.
+    void clear() {
+        m_registry.clear();
+        animations = renderer::AnimationLibrary{};
+        particles  = renderer::ParticleWorld{};
+        tilemap.clear();
+        m_visibleSprites = 0;
+    }
+
     [[nodiscard]] Registry&       registry()       { return m_registry; }
     [[nodiscard]] const Registry& registry() const { return m_registry; }
 

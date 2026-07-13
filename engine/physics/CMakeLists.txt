@@ -1,6 +1,7 @@
 vortex_add_module(physics
     SOURCES
         src/box2d/physics_world.cpp
+        src/components.cpp
     PUBLIC_DEPS
         Vortex::core
         Vortex::ecs

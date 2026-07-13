@@ -17,6 +17,38 @@ namespace {
     return static_cast<i32>(std::floor(numerator / denominator));
 }
 
+// How a tile's orientation bits come out the far end: a UV window (with negative
+// extents standing in for a mirror — SpriteBatch spans u from x to x + width, so a
+// negative width samples right-to-left) plus a quarter turn for the diagonal bit.
+struct Orientation {
+    bool mirrorU  = false;
+    bool mirrorV  = false;
+    bool quarterTurn = false;   // 90° clockwise on screen
+};
+
+// Tiled applies the diagonal flip (a transpose) first, then horizontal, then
+// vertical. A transpose is not something a UV window can express, but it factors
+// into "rotate 90° CW, then mirror vertically" — and pushing the H/V mirrors back
+// through that rotation swaps which axis they act on. That is the whole derivation:
+//   D=0 -> mirror (H, V), no turn
+//   D=1 -> mirror (V, !H), quarter turn
+// Sanity check against Tiled's own docs: H|D is a pure 90° CW rotation, and indeed
+// it lands on mirror (0, 0) with the turn.
+[[nodiscard]] Orientation orientationOf(TileId bits) noexcept {
+    const bool h = (bits & kFlipHorizontal) != 0u;
+    const bool v = (bits & kFlipVertical)   != 0u;
+    const bool d = (bits & kFlipDiagonal)   != 0u;
+    if (!d) return {h, v, false};
+    return {v, !h, true};
+}
+
+// Negative extents mirror; see Orientation.
+[[nodiscard]] Rect mirrored(Rect uv, bool mirrorU, bool mirrorV) noexcept {
+    if (mirrorU) { uv.x += uv.width;  uv.width  = -uv.width; }
+    if (mirrorV) { uv.y += uv.height; uv.height = -uv.height; }
+    return uv;
+}
+
 }
 
 // -------------------------------------------------------------------- TileLayer
@@ -95,20 +127,36 @@ void TileLayer::extract(std::vector<RenderItem>& out, const Rect* visibleBounds)
     const Vec4 color = tint;
     out.reserve(out.size() + static_cast<usize>(x1 - x0 + 1) * static_cast<usize>(y1 - y0 + 1));
 
+    // Both are loop-invariant, and the unrotated case is every tile in a typical map.
+    const Mat4 upright = Mat4::scaling(tileSize.x, tileSize.y, 1.0f);
+    // Scale swapped before the turn, so a rotated tile still covers exactly its cell
+    // when the cell is not square.
+    const Mat4 turned  = Mat4::rotationZ(-kHalfPi) * Mat4::scaling(tileSize.y, tileSize.x, 1.0f);
+
     for (i32 ty = y0; ty <= y1; ++ty) {
         const usize row = static_cast<usize>(ty) * m_width;
         for (i32 tx = x0; tx <= x1; ++tx) {
-            const TileId id = m_tiles[row + static_cast<usize>(tx)];
-            if (id == kEmptyTile) continue;
+            const TileId raw = m_tiles[row + static_cast<usize>(tx)];
+            if (raw == kEmptyTile) continue;
+
+            // A cell holding an id from a *different* layer's tileset is not this
+            // layer's to draw. Splitting a mixed layer per tileset is exactly how the
+            // Tiled importer keeps one sheet per layer.
+            const TileId index = tileIndex(raw);
+            if (index < firstTileId) continue;
+            const u32 frame = index - firstTileId;
+            if (frame >= tileset.frameCount()) continue;
 
             const Vec2 center{base.x + (static_cast<f32>(tx) + 0.5f) * tileSize.x,
                               base.y - (static_cast<f32>(ty) + 0.5f) * tileSize.y};
 
+            const Orientation o = orientationOf(tileFlipBits(raw));
+
             out.push_back({
                 .transform = Mat4::translation(center.x, center.y, 0.0f) *
-                             Mat4::scaling(tileSize.x, tileSize.y, 1.0f),
+                             (o.quarterTurn ? turned : upright),
                 .color   = color,
-                .uv      = tileset.frameUV(id - 1u),   // ids are 1-based; 0 is empty
+                .uv      = mirrored(tileset.frameUV(frame), o.mirrorU, o.mirrorV),
                 .texture = tileset.texture,
                 .layer   = layer,
             });
@@ -133,13 +181,21 @@ const TileLayer* Tilemap::layer(std::string_view name) const {
     return const_cast<Tilemap*>(this)->layer(name);
 }
 
+void Tilemap::clear() {
+    m_layers.clear();
+    m_flags.clear();
+}
+
 void Tilemap::setTileFlags(TileId id, u8 flags) {
-    if (id >= m_flags.size()) m_flags.resize(id + 1u, TileNone);
-    m_flags[id] = flags;
+    const TileId index = tileIndex(id);
+    if (index == kEmptyTile) return;   // would make every empty cell read as solid
+    if (index >= m_flags.size()) m_flags.resize(index + 1u, TileNone);
+    m_flags[index] = flags;
 }
 
 u8 Tilemap::tileFlags(TileId id) const noexcept {
-    return id < m_flags.size() ? m_flags[id] : static_cast<u8>(TileNone);
+    const TileId index = tileIndex(id);
+    return index < m_flags.size() ? m_flags[index] : static_cast<u8>(TileNone);
 }
 
 bool Tilemap::queryFlags(Vec2 world, u8 flags) const noexcept {

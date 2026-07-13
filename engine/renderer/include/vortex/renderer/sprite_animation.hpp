@@ -43,6 +43,10 @@ public:
 
     [[nodiscard]] usize size() const { return m_clips.size(); }
 
+    // Clips are append-only and a handle is just its index, so replaying this list
+    // in order through add() reconstructs every handle a saved scene refers to.
+    [[nodiscard]] const std::vector<AnimationClip>& clips() const { return m_clips; }
+
 private:
     std::vector<AnimationClip> m_clips;
 };

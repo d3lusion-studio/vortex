@@ -28,6 +28,11 @@ public:
     // Convenience: the current GPU texture for a handle (invalid if stale).
     [[nodiscard]] rhi::TextureHandle gpuTexture(TextureHandle handle) const;
 
+    // The source path a GPU texture came from, or empty for one this manager did not
+    // load (a procedurally created texture, say). This is what lets a scene file name
+    // a texture instead of storing a handle that means nothing on the next run.
+    [[nodiscard]] std::string pathOf(rhi::TextureHandle gpu) const;
+
     void unload(TextureHandle handle);
 
     void beginFrame();

@@ -1,12 +1,17 @@
 #include "vortex/app/app.hpp"
 
 #include "vortex/asset/asset_manager.hpp"
+#include "vortex/audio/audio.hpp"
+#include "vortex/core/json.hpp"
+#include "vortex/core/log.hpp"
 #include "vortex/core/math/scalar.hpp"
 #include "vortex/core/profiler.hpp"
 #include "vortex/jobs/job_system.hpp"
 #include "vortex/platform/clock.hpp"
 #include "vortex/platform/filesystem.hpp"
 #include "vortex/platform/input.hpp"
+#include "vortex/platform/input_map.hpp"
+#include "vortex/physics/physics_world.hpp"
 #include "vortex/platform/window.hpp"
 #include "vortex/renderer/camera2d.hpp"
 #include "vortex/renderer/sprite_batch.hpp"
@@ -15,6 +20,8 @@
 #include "vortex/rhi/rhi_types.hpp"
 #include "vortex/rhi/swapchain.hpp"
 
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace vortex::app {
@@ -37,7 +44,17 @@ struct App::Impl {
     std::unique_ptr<assets::AssetManager>  assets;
     std::unique_ptr<renderer::SpriteBatch> batch;
 
-    ecs::Scene scene;
+    SceneManager          scenes;
+    ecs::SerializeContext serialize;
+    pf::InputMap          actions;
+
+    // Keyed by scene, because a body is found by entity index and two scenes hand
+    // out the same indices to entirely different entities.
+    std::unordered_map<const ecs::Scene*, std::unique_ptr<physics::PhysicsWorld>> physics;
+
+    std::unique_ptr<audio::IAudioEngine>              audio;
+    bool                                              audioTried = false;
+    std::unordered_map<std::string, audio::SoundHandle> sounds;
 
     App::StartFn  startFn;
     App::UpdateFn updateFn;
@@ -85,8 +102,17 @@ App::App(AppConfig config) : m_impl(std::make_unique<Impl>()) {
     s.batch  = std::make_unique<renderer::SpriteBatch>(*s.device, s.swapchain->format(),
                                                        config.maxSprites);
 
-    s.scene.camera.viewportWidth  = static_cast<f32>(s.lastWidth);
-    s.scene.camera.viewportHeight = static_cast<f32>(s.lastHeight);
+    // Scene files name their textures; the asset manager is what turns a name into a
+    // handle and back. Capturing the raw pointer is safe: the manager outlives every
+    // save or load, both of which only ever run inside this App.
+    assets::AssetManager* am = s.assets.get();
+    s.serialize.textureName   = [am](rhi::TextureHandle h) { return am->pathOf(h); };
+    s.serialize.textureByName = [am](const std::string& path) {
+        return am->gpuTexture(am->loadTexture(path.c_str()));
+    };
+
+    s.scenes.active().camera.viewportWidth  = static_cast<f32>(s.lastWidth);
+    s.scenes.active().camera.viewportHeight = static_cast<f32>(s.lastHeight);
 }
 
 App::~App() {
@@ -104,15 +130,61 @@ App& App::onShutdown(StartFn fn)     { m_impl->shutdownFn    = std::move(fn); re
 
 void App::quit() { m_impl->quitRequested = true; }
 
-ecs::Scene&              App::scene()     { return m_impl->scene; }
-ecs::Registry&           App::registry()  { return m_impl->scene.registry(); }
-renderer::Camera2D&      App::camera()    { return m_impl->scene.camera; }
-renderer::ParticleWorld& App::particles() { return m_impl->scene.particles; }
+ecs::Scene&              App::scene()     { return m_impl->scenes.active(); }
+SceneManager&            App::scenes()    { return m_impl->scenes; }
+ecs::Registry&           App::registry()  { return m_impl->scenes.active().registry(); }
+renderer::Camera2D&      App::camera()    { return m_impl->scenes.active().camera; }
+renderer::ParticleWorld& App::particles() { return m_impl->scenes.active().particles; }
 pf::IWindow&             App::window()    { return *m_impl->window; }
 pf::IInputProvider&      App::input()     { return *m_impl->input; }
+pf::InputMap&            App::actions()   { return m_impl->actions; }
 rhi::IGraphicsDevice&    App::device()    { return *m_impl->device; }
 assets::AssetManager&    App::assets()    { return *m_impl->assets; }
+pf::IFileSystem&         App::fileSystem() { return *m_impl->fs; }
 jobs::JobSystem&         App::jobs()      { return *m_impl->jobs; }
+
+physics::PhysicsWorld& App::physics() {
+    Impl& s = *m_impl;
+    const ecs::Scene* key = &s.scenes.active();
+
+    auto it = s.physics.find(key);
+    if (it == s.physics.end()) {
+        // fixedStep is not the caller's to choose: the loop already decides how often
+        // physics is stepped, and a solver on a different clock would stutter.
+        const physics::PhysicsConfig config{.gravity        = s.config.gravity,
+                                            .pixelsPerMeter = s.config.pixelsPerMeter,
+                                            .fixedStep      = s.config.fixedTimeStep};
+        it = s.physics.emplace(key, std::make_unique<physics::PhysicsWorld>(config)).first;
+        VORTEX_INFO("Physics", "world created for scene '%.*s'",
+                    static_cast<int>(s.scenes.activeName().size()), s.scenes.activeName().data());
+    }
+    return *it->second;
+}
+
+bool App::hasPhysics() const {
+    return m_impl->physics.count(&m_impl->scenes.active()) != 0;
+}
+
+audio::IAudioEngine* App::audio() {
+    Impl& s = *m_impl;
+    if (!s.audioTried) {
+        s.audioTried = true;   // a failed open is not retried every frame
+        s.audio      = audio::createAudioEngine();
+        if (!s.audio) VORTEX_WARN("Audio", "no audio device; sound is disabled");
+    }
+    return s.audio.get();
+}
+
+void App::playSound(const char* path, bool loop) {
+    audio::IAudioEngine* engine = audio();
+    if (engine == nullptr) return;
+
+    auto it = m_impl->sounds.find(path);
+    if (it == m_impl->sounds.end())
+        it = m_impl->sounds.emplace(path, engine->load(path)).first;
+
+    if (it->second.valid()) engine->play(it->second, loop);
+}
 
 rhi::TextureHandle App::loadTexture(const char* path) {
     return m_impl->assets->gpuTexture(m_impl->assets->loadTexture(path));
@@ -127,12 +199,54 @@ rhi::TextureHandle App::whiteTexture() {
     return m_impl->white;
 }
 
+const ecs::SerializeContext& App::serializeContext() const { return m_impl->serialize; }
+
+bool App::saveScene(const char* path) {
+    const json::Value doc  = ecs::saveScene(m_impl->scenes.active(), m_impl->serialize);
+    const std::string text = json::write(doc);
+    if (!m_impl->fs->writeFile(path, text.data(), text.size())) {
+        VORTEX_ERROR("Scene", "could not write '%s'", path);
+        return false;
+    }
+    VORTEX_INFO("Scene", "saved '%s' (%zu entities, %zu bytes)", path,
+                m_impl->scenes.active().registry().aliveCount(), text.size());
+    return true;
+}
+
+bool App::loadScene(const char* path) {
+    const std::vector<std::byte> bytes = m_impl->fs->readFile(path);
+    if (bytes.empty()) {
+        VORTEX_ERROR("Scene", "could not read '%s'", path);
+        return false;
+    }
+
+    std::string       error;
+    const json::Value doc = json::parse(
+        {reinterpret_cast<const char*>(bytes.data()), bytes.size()}, &error);
+    if (!error.empty()) {
+        VORTEX_ERROR("Scene", "%s: %s", path, error.c_str());
+        return false;
+    }
+
+    if (!ecs::loadScene(m_impl->scenes.active(), doc, m_impl->serialize)) return false;
+
+    // The camera's viewport is a property of the window, not of the file.
+    int width = 0, height = 0;
+    m_impl->window->getFramebufferSize(width, height);
+    m_impl->scenes.active().camera.viewportWidth  = static_cast<f32>(width);
+    m_impl->scenes.active().camera.viewportHeight = static_cast<f32>(height);
+
+    VORTEX_INFO("Scene", "loaded '%s' (%zu entities)", path,
+                m_impl->scenes.active().registry().aliveCount());
+    return true;
+}
+
 f32   App::time()           const { return m_impl->elapsed; }
 f32   App::deltaTime()      const { return m_impl->delta; }
 f32   App::fps()            const { return m_impl->fpsValue; }
 u64   App::frameCount()     const { return m_impl->frames; }
 u32   App::drawCalls()      const { return m_impl->batch->drawCallCount(); }
-usize App::visibleSprites() const { return m_impl->scene.visibleSprites(); }
+usize App::visibleSprites() const { return m_impl->scenes.active().visibleSprites(); }
 
 f32 App::fixedAlpha() const {
     const f32 step = m_impl->config.fixedTimeStep;
@@ -147,9 +261,17 @@ int App::run() {
     while (!s.window->shouldClose() && !s.quitRequested) {
         if (s.config.maxFrames != 0 && s.frames >= s.config.maxFrames) break;
 
+        // Before anything reads the scene this frame. A switch queued mid-update
+        // lands here, so no system ever sees the world change under it.
+        s.scenes.applyPendingSwitch();
+
         s.clock->tick();
         s.input->newFrame();
         s.window->pollEvents();
+
+        // After pollEvents, before anything reads input: every query this frame
+        // then sees one consistent snapshot.
+        s.actions.update(*s.input);
 
         s.delta = clamp(static_cast<f32>(s.clock->deltaTime()), 0.0f, s.config.maxFrameTime);
         s.elapsed += s.delta;
@@ -163,14 +285,23 @@ int App::run() {
         }
         if (width == 0 || height == 0) continue;   // minimised; nothing to draw into
 
-        s.scene.camera.viewportWidth  = static_cast<f32>(width);
-        s.scene.camera.viewportHeight = static_cast<f32>(height);
+        s.scenes.active().camera.viewportWidth  = static_cast<f32>(width);
+        s.scenes.active().camera.viewportHeight = static_cast<f32>(height);
 
-        if (s.fixedUpdateFn && s.config.fixedTimeStep > 0.0f) {
+        // Physics steps inside the same fixed loop as gameplay, and BEFORE it, so
+        // onFixedUpdate reads transforms the solver has already settled this step
+        // rather than last step's.
+        const auto physicsIt = s.physics.find(&s.scenes.active());
+        physics::PhysicsWorld* world =
+            physicsIt != s.physics.end() ? physicsIt->second.get() : nullptr;
+
+        if ((s.fixedUpdateFn || world != nullptr) && s.config.fixedTimeStep > 0.0f) {
             VORTEX_PROFILE_ZONE("app.fixedUpdate");
             s.accumulator += s.delta;
             while (s.accumulator >= s.config.fixedTimeStep) {
-                s.fixedUpdateFn(*this, s.config.fixedTimeStep);
+                if (world != nullptr)
+                    world->step(s.scenes.active().registry(), s.config.fixedTimeStep);
+                if (s.fixedUpdateFn) s.fixedUpdateFn(*this, s.config.fixedTimeStep);
                 s.accumulator -= s.config.fixedTimeStep;
             }
         }
@@ -178,8 +309,8 @@ int App::run() {
         {
             VORTEX_PROFILE_ZONE("app.update");
             if (s.updateFn) s.updateFn(*this, s.delta);
-            if (s.config.parallelExtract) s.scene.update(s.delta, *s.jobs);
-            else                          s.scene.update(s.delta);
+            if (s.config.parallelExtract) s.scenes.active().update(s.delta, *s.jobs);
+            else                          s.scenes.active().update(s.delta);
         }
 
         s.assets->beginFrame();
@@ -205,11 +336,11 @@ int App::run() {
                                 .height = static_cast<f32>(frame.height)});
         frame.cmd->setScissor(0, 0, frame.width, frame.height);
 
-        s.batch->begin(s.scene.camera.viewProjection());
+        s.batch->begin(s.scenes.active().camera.viewProjection());
         {
             VORTEX_PROFILE_ZONE("app.extract");
-            if (s.config.parallelExtract) s.scene.extract(s.items, *s.jobs);
-            else                          s.scene.extract(s.items);
+            if (s.config.parallelExtract) s.scenes.active().extract(s.items, *s.jobs);
+            else                          s.scenes.active().extract(s.items);
         }
         if (!s.items.empty()) s.batch->submit(s.items.data(), s.items.size());
         if (s.renderFn) s.renderFn(*this, *s.batch);

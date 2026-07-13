@@ -1,6 +1,7 @@
 vortex_add_module(ecs
     SOURCES
         src/systems.cpp
+        src/serialize.cpp
     PUBLIC_DEPS
         Vortex::core
         Vortex::rhi

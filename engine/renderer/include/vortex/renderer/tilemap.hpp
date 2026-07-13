@@ -14,8 +14,22 @@ namespace vortex::renderer {
 
 // Tile ids are 1-based on the wire so that 0 can mean "empty" without costing a
 // separate occupancy mask. kEmptyTile is what an unset cell reads back as.
+//
+// The top three bits carry orientation rather than identity, matching Tiled's GID
+// encoding so an imported map needs no re-encoding pass. Everything that means
+// "which tile is this" — flags, the tileset index — must go through tileIndex();
+// only extract() looks at the orientation bits.
 using TileId = u32;
 inline constexpr TileId kEmptyTile = 0u;
+
+inline constexpr TileId kFlipHorizontal = 0x80000000u;
+inline constexpr TileId kFlipVertical   = 0x40000000u;
+inline constexpr TileId kFlipDiagonal   = 0x20000000u;   // transpose; with H or V this is a 90° rotation
+inline constexpr TileId kFlipMask       = kFlipHorizontal | kFlipVertical | kFlipDiagonal;
+inline constexpr TileId kTileIndexMask  = ~kFlipMask;    // 29 bits: half a billion distinct tiles
+
+[[nodiscard]] constexpr TileId tileIndex(TileId id) noexcept { return id & kTileIndexMask; }
+[[nodiscard]] constexpr TileId tileFlipBits(TileId id) noexcept { return id & kFlipMask; }
 
 // Per-tile gameplay bits, indexed by tile id. Kept out of the draw path entirely —
 // rendering never reads them, and collision never reads the UVs.
@@ -60,6 +74,13 @@ public:
 
     std::string name;
     SpriteSheet tileset;                 // page + grid the ids index into
+
+    // The tile id that means "frame 0 of this layer's tileset". Ids stay globally
+    // unique across a map — which is what lets Tilemap key flags by id alone — while
+    // each layer subtracts its own base to land on a frame. A map drawn from a single
+    // tileset leaves this at 1 and never thinks about it.
+    TileId      firstTileId = 1;
+
     Vec2        tileSize{32.0f, 32.0f};  // world units per tile
     Vec2        origin{0.0f, 0.0f};      // world position of the top-left corner
     Vec2        parallax{1.0f, 1.0f};
@@ -84,9 +105,16 @@ public:
     [[nodiscard]] const std::vector<TileLayer>& layers() const noexcept { return m_layers; }
 
     // Flags are per tile *id*, so every instance of a tile shares them. Ids beyond
-    // what has been set read back as TileNone.
+    // what has been set read back as TileNone. Orientation bits are masked off, so a
+    // flipped tile carries the same flags as the tile it was flipped from. Flagging
+    // kEmptyTile is dropped: it would make every empty cell in the map read as solid.
     void                 setTileFlags(TileId id, u8 flags);
     [[nodiscard]] u8     tileFlags(TileId id) const noexcept;
+
+    // Dense, indexed by tile id, and only as long as the highest id ever flagged.
+    [[nodiscard]] const std::vector<u8>& flags() const noexcept { return m_flags; }
+
+    void clear();
 
     // Does any layer put a tile carrying `flags` over this world point? This is the
     // query gameplay actually asks ("am I standing on something solid?").

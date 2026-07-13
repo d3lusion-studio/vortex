@@ -181,6 +181,17 @@ public:
             if (!isFree[i]) fn(Entity{i, m_generations[i]});
     }
 
+    // Drop every entity, component and pool. Generations reset with them, so an
+    // Entity held across a clear() may silently start naming a different entity —
+    // treat every handle as dead afterwards. Loading a scene over another does
+    // exactly this, which is why loadScene() takes the whole Scene.
+    void clear() {
+        m_pools.clear();
+        m_generations.clear();
+        m_free.clear();
+        m_aliveCount = 0;
+    }
+
     [[nodiscard]] usize aliveCount() const { return m_aliveCount; }
     [[nodiscard]] usize capacity() const { return m_generations.size(); }
 

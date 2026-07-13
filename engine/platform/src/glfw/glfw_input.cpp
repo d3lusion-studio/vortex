@@ -47,8 +47,31 @@ static constexpr int s_glfwKeyMap[] = {
 static_assert(std::size(s_glfwKeyMap) == static_cast<std::size_t>(Key::Count),
               "s_glfwKeyMap size does not match Key::Count — update the table");
 
+// GLFW's gamepad mapping database already normalises every known pad to this exact
+// button order, so the enum maps across one-to-one.
+static constexpr int s_glfwPadButtonMap[] = {
+    GLFW_GAMEPAD_BUTTON_A, GLFW_GAMEPAD_BUTTON_B, GLFW_GAMEPAD_BUTTON_X, GLFW_GAMEPAD_BUTTON_Y,
+    GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER,
+    GLFW_GAMEPAD_BUTTON_BACK, GLFW_GAMEPAD_BUTTON_START, GLFW_GAMEPAD_BUTTON_GUIDE,
+    GLFW_GAMEPAD_BUTTON_LEFT_THUMB, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB,
+    GLFW_GAMEPAD_BUTTON_DPAD_UP, GLFW_GAMEPAD_BUTTON_DPAD_RIGHT,
+    GLFW_GAMEPAD_BUTTON_DPAD_DOWN, GLFW_GAMEPAD_BUTTON_DPAD_LEFT,
+};
+static_assert(std::size(s_glfwPadButtonMap) == static_cast<std::size_t>(GamepadButton::Count),
+              "s_glfwPadButtonMap size does not match GamepadButton::Count");
+
+static constexpr int s_glfwPadAxisMap[] = {
+    GLFW_GAMEPAD_AXIS_LEFT_X,  GLFW_GAMEPAD_AXIS_LEFT_Y,
+    GLFW_GAMEPAD_AXIS_RIGHT_X, GLFW_GAMEPAD_AXIS_RIGHT_Y,
+    GLFW_GAMEPAD_AXIS_LEFT_TRIGGER, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER,
+};
+static_assert(std::size(s_glfwPadAxisMap) == static_cast<std::size_t>(GamepadAxis::Count),
+              "s_glfwPadAxisMap size does not match GamepadAxis::Count");
+
 static constexpr int kKeyCount = static_cast<int>(Key::Count);
 static constexpr int kBtnCount = static_cast<int>(MouseButton::Count);
+static constexpr int kPadBtnCount = static_cast<int>(GamepadButton::Count);
+static constexpr int kPadAxisCount = static_cast<int>(GamepadAxis::Count);
 
 
 class GlfwInput final : public IInputProvider {
@@ -109,19 +132,96 @@ public:
 
     float scrollDelta() const override { return m_scrollDelta; }
 
+    bool isGamepadConnected(unsigned pad) const override {
+        return pad < kMaxGamepads && m_pads[pad].connected;
+    }
+
+    bool isGamepadButtonDown(unsigned pad, GamepadButton btn) const override {
+        const int idx = static_cast<int>(btn);
+        if (!isGamepadConnected(pad) || idx < 0 || idx >= kPadBtnCount) return false;
+        return m_pads[pad].buttons[idx];
+    }
+
+    bool isGamepadButtonPressed(unsigned pad, GamepadButton btn) const override {
+        const int idx = static_cast<int>(btn);
+        if (!isGamepadConnected(pad) || idx < 0 || idx >= kPadBtnCount) return false;
+        return m_pads[pad].buttons[idx] && !m_pads[pad].prevButtons[idx];
+    }
+
+    bool isGamepadButtonReleased(unsigned pad, GamepadButton btn) const override {
+        const int idx = static_cast<int>(btn);
+        if (!isGamepadConnected(pad) || idx < 0 || idx >= kPadBtnCount) return false;
+        return !m_pads[pad].buttons[idx] && m_pads[pad].prevButtons[idx];
+    }
+
+    float gamepadAxis(unsigned pad, GamepadAxis axis) const override {
+        const int idx = static_cast<int>(axis);
+        if (!isGamepadConnected(pad) || idx < 0 || idx >= kPadAxisCount) return 0.0f;
+        return m_pads[pad].axes[idx];
+    }
+
+    // Keyboard and mouse are polled straight from GLFW on every query, so only their
+    // previous state needs latching. Gamepad state is not queryable that way — it is
+    // snapshotted here, and both edges are computed from the snapshot.
     void newFrame() override {
         for (int i = 0; i < kKeyCount; ++i)
             m_prevKeys[i] = (glfwGetKey(m_window, s_glfwKeyMap[i]) == GLFW_PRESS);
         for (int i = 0; i < kBtnCount; ++i)
             m_prevBtns[i] = (glfwGetMouseButton(m_window, i) == GLFW_PRESS);
         m_scrollDelta = 0.0f;
+
+        for (unsigned p = 0; p < kMaxGamepads; ++p) {
+            Pad& pad = m_pads[p];
+            std::memcpy(pad.prevButtons, pad.buttons, sizeof pad.buttons);
+
+            GLFWgamepadstate state{};
+            const int jid = GLFW_JOYSTICK_1 + static_cast<int>(p);
+            pad.connected = glfwJoystickIsGamepad(jid) == GLFW_TRUE
+                         && glfwGetGamepadState(jid, &state) == GLFW_TRUE;
+
+            if (!pad.connected) {
+                // Zero it, so a pad unplugged mid-press does not leave a button stuck
+                // down forever.
+                std::memset(pad.buttons, 0, sizeof pad.buttons);
+                std::memset(pad.axes, 0, sizeof pad.axes);
+                continue;
+            }
+
+            for (int i = 0; i < kPadBtnCount; ++i)
+                pad.buttons[i] = state.buttons[s_glfwPadButtonMap[i]] == GLFW_PRESS;
+
+            for (int i = 0; i < kPadAxisCount; ++i) {
+                float value = state.axes[s_glfwPadAxisMap[i]];
+                const auto axis = static_cast<GamepadAxis>(i);
+
+                // GLFW rests a trigger at -1 and pulls it to +1; the interface promises
+                // [0, 1], so fold it here rather than making every game do it.
+                if (axis == GamepadAxis::LeftTrigger || axis == GamepadAxis::RightTrigger)
+                    value = (value + 1.0f) * 0.5f;
+
+                // GLFW's stick Y is +down. The interface promises +up, matching the
+                // world's y axis, so flip it.
+                if (axis == GamepadAxis::LeftY || axis == GamepadAxis::RightY)
+                    value = -value;
+
+                pad.axes[i] = value;
+            }
+        }
     }
 
 private:
+    struct Pad {
+        bool  connected = false;
+        bool  buttons[kPadBtnCount]     = {};
+        bool  prevButtons[kPadBtnCount] = {};
+        float axes[kPadAxisCount]       = {};
+    };
+
     GLFWwindow* m_window;
     bool  m_prevKeys[kKeyCount] = {};
     bool  m_prevBtns[kBtnCount] = {};
     float m_scrollDelta = 0.0f;
+    Pad   m_pads[kMaxGamepads];
 
     static void scrollCallback(GLFWwindow* win, double /*dx*/, double dy) {
         auto* self = static_cast<GlfwInput*>(glfwGetWindowUserPointer(win));

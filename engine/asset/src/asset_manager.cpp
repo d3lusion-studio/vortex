@@ -115,6 +115,15 @@ rhi::TextureHandle AssetManager::gpuTexture(TextureHandle handle) const {
     return asset ? asset->gpu : rhi::TextureHandle{};
 }
 
+std::string AssetManager::pathOf(rhi::TextureHandle gpu) const {
+    if (!gpu.valid()) return {};
+    // A linear scan over the loaded textures. This runs when a scene is saved, not
+    // when one is drawn, and a project has hundreds of textures rather than millions.
+    for (const Slot& slot : m_slots)
+        if (slot.alive && slot.asset.gpu == gpu) return slot.path;
+    return {};
+}
+
 void AssetManager::unload(TextureHandle handle) {
     if (handle.index >= m_slots.size()) return;
     Slot& slot = m_slots[handle.index];

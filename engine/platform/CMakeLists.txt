@@ -4,6 +4,7 @@ vortex_add_module(platform
     SOURCES
         src/glfw/glfw_window.cpp
         src/glfw/glfw_input.cpp
+        src/native/input_map.cpp
         src/native/native_clock.cpp
         src/native/native_filesystem.cpp
         src/native/native_dynamic_library.cpp

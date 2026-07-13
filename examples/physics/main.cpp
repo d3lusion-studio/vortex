@@ -111,7 +111,7 @@ int main() {
         if (writeBeepWav(*fs, wav)) clickSound = audio->load(wav.c_str());
     }
 
-    physics::PhysicsWorld physics({0.0f, -9.81f}, 50.0f);
+    physics::PhysicsWorld physics({.gravity = {0.0f, -9.81f}, .pixelsPerMeter = 50.0f});
 
     ecs::Scene scene;
     scene.camera.viewportWidth  = static_cast<f32>(fbw);
@@ -119,7 +119,7 @@ int main() {
     scene.addSystem([&](ecs::Registry& reg, f32 dt) { physics.step(reg, dt); });
 
     int collisions = 0;
-    physics.setContactCallback([&](ecs::Entity, ecs::Entity) {
+    physics.setContactBegin([&](ecs::Entity, ecs::Entity) {
         ++collisions;
         if (audio && clickSound.valid()) audio->play(clickSound);
     });
