@@ -715,9 +715,8 @@ void MeshRenderer::ensureInstanceCapacity(u32 instances, u32 bones) {
 
     m_device.waitIdle();   // the old buffers may still be in flight
     for (u32 i = 0; i < rhi::kMaxFramesInFlight; ++i) {
-        if (m_uniformBindGroups[i].valid()) m_device.destroyBindGroup(m_uniformBindGroups[i]);
-        if (m_instanceBuffers[i].valid())   m_device.destroyBuffer(m_instanceBuffers[i]);
-        if (m_boneBuffers[i].valid())       m_device.destroyBuffer(m_boneBuffers[i]);
+        if (m_instanceBuffers[i].valid()) m_device.destroyBuffer(m_instanceBuffers[i]);
+        if (m_boneBuffers[i].valid())     m_device.destroyBuffer(m_boneBuffers[i]);
 
         m_instanceBuffers[i] = m_device.createBuffer(
             {.size = static_cast<u64>(icap) * sizeof(GpuInstance),
@@ -727,15 +726,27 @@ void MeshRenderer::ensureInstanceCapacity(u32 instances, u32 bones) {
             {.size = static_cast<u64>(bcap) * sizeof(Mat4),
              .usage = rhi::BufferUsage::Storage, .domain = rhi::MemoryDomain::Upload,
              .debugName = "mesh_bones"});
-        m_uniformBindGroups[i] = m_device.createBindGroup(
-            {.uniformBuffer = m_uniformBuffers[i], .uniformSize = sizeof(FrameUBO),
-             .storageBuffer = m_instanceBuffers[i],
-             .storageSize   = static_cast<u64>(icap) * sizeof(GpuInstance),
-             .boneBuffer    = m_boneBuffers[i],
-             .boneSize      = static_cast<u64>(bcap) * sizeof(Mat4)});
     }
     m_instanceCapacity = icap;
     m_boneCapacity     = bcap;
+    rebuildFrameBindGroups();
+}
+
+// The frame set names four buffers, and any of them can be replaced when it grows. One place
+// rebuilds the groups, so a buffer that moves cannot leave a bind group pointing at the old one.
+void MeshRenderer::rebuildFrameBindGroups() {
+    m_device.waitIdle();
+    for (u32 i = 0; i < rhi::kMaxFramesInFlight; ++i) {
+        if (m_uniformBindGroups[i].valid()) m_device.destroyBindGroup(m_uniformBindGroups[i]);
+        m_uniformBindGroups[i] = m_device.createBindGroup(
+            {.uniformBuffer = m_uniformBuffers[i], .uniformSize = sizeof(FrameUBO),
+             .storageBuffer = m_instanceBuffers[i],
+             .storageSize   = static_cast<u64>(m_instanceCapacity) * sizeof(GpuInstance),
+             .boneBuffer    = m_boneBuffers[i],
+             .boneSize      = static_cast<u64>(m_boneCapacity) * sizeof(Mat4),
+             .morphBuffer   = m_morphBuffer,
+             .morphSize     = static_cast<u64>(m_morphCapacity) * sizeof(GpuMorphDelta)});
+    }
 }
 
 MeshRenderer::~MeshRenderer() {
@@ -885,6 +896,16 @@ rhi::PipelineHandle MeshRenderer::pipelineFor(PipelineKey key) {
     return pipe;
 }
 
+MeshHandle MeshRenderer::createMesh(const MeshData& data, bool dynamic) {
+    const MeshHandle h = createMesh(data.vertices.data(), data.vertices.size(),
+                                    data.indices.data(), data.indices.size(), dynamic);
+    if (h.valid() && !data.morphTargets.empty()) {
+        appendMorphTargets(m_meshes[h.index], data);
+        m_meshes[h.index].cpu.morphTargets = data.morphTargets;   // the CPU path needs them too
+    }
+    return h;
+}
+
 MeshHandle MeshRenderer::createMesh(const MeshVertex* vertices, usize vertexCount,
                                     const u32* indices, usize indexCount, bool dynamic) {
     GpuMesh gm;
@@ -909,6 +930,47 @@ MeshHandle MeshRenderer::createMesh(const MeshVertex* vertices, usize vertexCoun
     const u32 index = static_cast<u32>(m_meshes.size());
     m_meshes.push_back(std::move(gm));
     return {.index = index, .generation = 0};
+}
+
+void MeshRenderer::appendMorphTargets(GpuMesh& gm, const MeshData& data) {
+    if (data.morphTargets.empty()) return;
+
+    gm.morphBase    = static_cast<u32>(m_morphData.size());
+    gm.morphTargets = static_cast<u32>(data.morphTargets.size());
+
+    // Laid out target-major: all of target 0's deltas, then all of target 1's. The vertex
+    // shader indexes it as base + target * vertexCount + gl_VertexIndex, which is one multiply
+    // and an add — the alternative (vertex-major) would need the target count at every lookup.
+    for (const MorphTarget& target : data.morphTargets) {
+        for (usize v = 0; v < gm.vertexCount; ++v) {
+            GpuMorphDelta d{};
+            if (v < target.positions.size())
+                d.position = {target.positions[v].x, target.positions[v].y,
+                              target.positions[v].z, 0.0f};
+            if (v < target.normals.size())
+                d.normal = {target.normals[v].x, target.normals[v].y, target.normals[v].z, 0.0f};
+            m_morphData.push_back(d);
+        }
+    }
+
+    // Grow the GPU buffer to fit, and rebuild the bind groups that name it. This happens at
+    // load, not per frame — the shapes are fixed; only the weights move.
+    const u32 needed = static_cast<u32>(m_morphData.size());
+    if (needed > m_morphCapacity) {
+        m_device.waitIdle();
+        if (m_morphBuffer.valid()) m_device.destroyBuffer(m_morphBuffer);
+
+        u32 cap = m_morphCapacity > 0 ? m_morphCapacity : 1024;
+        while (cap < needed) cap *= 2;
+        m_morphBuffer = m_device.createBuffer(
+            {.size = static_cast<u64>(cap) * sizeof(GpuMorphDelta),
+             .usage = rhi::BufferUsage::Storage, .domain = rhi::MemoryDomain::Upload,
+             .debugName = "mesh_morph_targets"});
+        m_morphCapacity = cap;
+        rebuildFrameBindGroups();
+    }
+    m_device.updateBuffer(m_morphBuffer, m_morphData.data(),
+                          m_morphData.size() * sizeof(GpuMorphDelta));
 }
 
 void MeshRenderer::updateMesh(MeshHandle h, const MeshVertex* vertices, usize vertexCount) {
@@ -1381,7 +1443,24 @@ void MeshRenderer::classify() {
             boneCount  = static_cast<f32>(inst.boneCount);
             m_boneData.insert(m_boneData.end(), inst.bones, inst.bones + inst.boneCount);
         }
-        m_instanceData[i].params = {lightmap, boneOffset, boneCount, 0.0f};
+
+        GpuInstance& gi = m_instanceData[i];
+        gi.morphInfo      = {0.0f, 0.0f, 0.0f, 0.0f};
+        gi.morphWeights[0] = {0.0f, 0.0f, 0.0f, 0.0f};
+        gi.morphWeights[1] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        f32 morphBase = 0.0f;
+        if (inst.morphWeights != nullptr && inst.morphCount > 0 &&
+            inst.mesh.valid() && inst.mesh.index < m_meshes.size()) {
+            const GpuMesh& gm = m_meshes[inst.mesh.index];
+            const u32 count = std::min({inst.morphCount, gm.morphTargets, 8u});
+            morphBase = static_cast<f32>(gm.morphBase);
+            gi.morphInfo = {static_cast<f32>(count), static_cast<f32>(gm.vertexCount), 0.0f, 0.0f};
+            for (u32 w = 0; w < count; ++w)
+                (&gi.morphWeights[w / 4].x)[w % 4] = inst.morphWeights[w];
+        }
+
+        gi.params = {lightmap, boneOffset, boneCount, morphBase};
     }
 
     ensureInstanceCapacity(static_cast<u32>(m_instances.size()),

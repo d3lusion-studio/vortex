@@ -13,6 +13,9 @@
 // honest test: if the pose pipeline is wrong, switching clips shows it immediately.
 
 #include "vortex/anim/clip.hpp"
+#include "vortex/anim/curve.hpp"
+#include "vortex/anim/graph.hpp"
+#include "vortex/anim/pose.hpp"
 #include "vortex/anim/skeleton.hpp"
 #include "vortex/asset/gltf.hpp"
 #include "vortex/asset/image.hpp"
@@ -86,7 +89,7 @@ int main() {
     // --- Import ------------------------------------------------------------
     const std::string modelDir = "assets/models/cato/";
     std::string error;
-    const assets::GltfModel model = assets::loadGltf((modelDir + "cato.gltf").c_str(), &error);
+    assets::GltfModel model = assets::loadGltf((modelDir + "cato.gltf").c_str(), &error);
     if (!model.valid()) {
         VORTEX_ERROR("App", "glTF failed: %s", error.c_str());
         return 1;
@@ -95,6 +98,16 @@ int main() {
                 model.primitives.size(), model.skeleton.size(), model.animations.size());
     for (const anim::Clip& c : model.animations)
         VORTEX_INFO("App", "  clip '%s' (%.2fs)", c.name.c_str(), c.duration);
+
+    // Footstep events. glTF has nowhere to put these, so they are authored here — but they are
+    // attached to the CLIP, not to the game code, because "when does the foot land" is a fact
+    // about the animation. Put it in the gameplay and it rots the moment the walk is retimed.
+    for (anim::Clip& c : model.animations) {
+        if (c.name == "Walk" || c.name == "Run") {
+            c.addEvent(c.duration * 0.25f, "footstep.left");
+            c.addEvent(c.duration * 0.75f, "footstep.right");
+        }
+    }
 
     // Upload each primitive with the material glTF asked for.
     // Which skinning backend is decided the way the graphics backend is: by the environment,
@@ -159,13 +172,116 @@ int main() {
         .alphaCutoff = 0.5f,          // below this, the fragment is thrown away — in BOTH passes
         .doubleSided = true});
 
-    // --- Animation ---------------------------------------------------------
-    anim::Player player;
-    usize clipIndex = 0;
-    if (!model.animations.empty()) player.play(&model.animations[0]);
+    // --- Wave C: morph targets ---------------------------------------------
+    //
+    // A morph target is the mesh as a DIFFERENCE — what to add to each vertex to reach another
+    // shape. Two of them here; their weights are animated independently, and because they are
+    // deltas, both can be half-on at once and the result is a shape that is neither.
+    renderer::MeshData blob = renderer::makeSphere(24, 32, 0.6f);
+    {
+        renderer::MorphTarget tall;
+        tall.name = "tall";
+        renderer::MorphTarget spiky;
+        spiky.name = "spiky";
+        for (const renderer::MeshVertex& v : blob.vertices) {
+            // Stretch along Y and pinch in X/Z: an egg.
+            tall.positions.push_back({-v.position.x * 0.45f, v.position.y * 1.3f,
+                                      -v.position.z * 0.45f});
+            tall.normals.push_back({0.0f, 0.0f, 0.0f});
 
-    std::vector<anim::Transform> pose;
-    std::vector<Mat4>            skinning;
+            // Push every vertex out along its normal, but only on alternating bands — spikes.
+            const f32 band = std::sin(v.position.y * 22.0f);
+            spiky.positions.push_back(v.normal * (0.35f * band));
+            spiky.normals.push_back({0.0f, 0.0f, 0.0f});
+        }
+        blob.morphTargets.push_back(std::move(tall));
+        blob.morphTargets.push_back(std::move(spiky));
+    }
+
+    // The morphing mesh goes through the SKINNER, not straight to the renderer — that is what
+    // makes the CPU and GPU backends both able to do it, and each other's test.
+    auto blobSkinner = renderer::createSkinner(mesh);
+    const renderer::SkinHandle blobSkin = blobSkinner->addMesh(blob);
+    const renderer::MaterialHandle blobMat = mesh.createMaterial(
+        {.baseColor = {0.85f, 0.45f, 0.3f, 1.0f}, .metallic = 0.1f, .roughness = 0.35f});
+
+    // The weights are just curves. Nothing about morphing needs its own animation system.
+    anim::Curve<f32> tallWeight;
+    tallWeight.loop = true;
+    tallWeight.add(0.0f, 0.0f).add(1.5f, 1.0f, easing::Ease::InOutCubic).add(3.0f, 0.0f,
+                                                                            easing::Ease::InOutCubic);
+    anim::Curve<f32> spikyWeight;
+    spikyWeight.loop = true;
+    spikyWeight.add(0.0f, 0.0f).add(0.75f, 1.0f, easing::Ease::OutBack)
+               .add(2.25f, 0.0f, easing::Ease::InOutSine).add(3.0f, 0.0f);
+
+    // --- Wave C: a curve-driven Transform ----------------------------------
+    //
+    // The same Curve, over a different type. This is the whole of "Animated Transform" — and of
+    // "Animated UI", which is this exact code pointed at an opacity instead of a position.
+    const renderer::MeshHandle cubeMesh = mesh.createMesh(renderer::makeCube(0.5f));
+    const renderer::MaterialHandle cubeMat = mesh.createMaterial(
+        {.baseColor = {0.4f, 0.7f, 0.9f, 1.0f}, .metallic = 0.2f, .roughness = 0.4f});
+
+    anim::Curve<Vec3> hop;
+    hop.loop   = true;
+    hop.interp = anim::CurveInterp::CatmullRom;   // a spline: no corner at the waypoints
+    hop.add(0.0f, {-2.6f, 0.30f, 1.4f})
+       .add(1.0f, {-2.6f, 1.20f, 1.4f}, easing::Ease::OutQuad)   // ease out of the launch
+       .add(2.0f, {-2.6f, 0.30f, 1.4f}, easing::Ease::InQuad)    // ease into the landing
+       .add(3.0f, {-2.6f, 0.30f, 1.4f});
+
+    anim::Curve<Quat> spin;
+    spin.loop = true;
+    spin.add(0.0f, Quat::identity())
+        .add(1.5f, Quat::fromAxisAngle({0, 1, 0}, 3.14159f))
+        .add(3.0f, Quat::fromAxisAngle({0, 1, 0}, 6.28318f));
+
+    // --- Wave C: colour, in four spaces ------------------------------------
+    //
+    // The same two colours, the same t, four answers. Red to green through LINEAR RGB dips
+    // through a dark olive, because the straight line between them in RGB passes below both in
+    // perceived lightness. Oklab is built so that a straight line looks straight to a human, and
+    // stays bright the whole way. This is what "which colour space" costs you.
+    const renderer::MeshHandle swatchMesh = mesh.createMesh(renderer::makeSphere(16, 24, 0.22f));
+    const renderer::MaterialHandle swatchMat = mesh.createMaterial(
+        {.baseColor = {1.0f, 1.0f, 1.0f, 1.0f}, .metallic = 0.0f, .roughness = 0.55f});
+    const Color colorA = Color::fromRgb(0xE03030);   // red
+    const Color colorB = Color::fromRgb(0x30C040);   // green
+    const anim::ColorSpace spaces[4] = {anim::ColorSpace::LinearRgb, anim::ColorSpace::Srgb,
+                                        anim::ColorSpace::Oklab, anim::ColorSpace::Hsv};
+
+    // --- Animation graph ---------------------------------------------------
+    //
+    //            maskNode  (root)          legs from the crossfade, upper body from Think
+    //           /        \
+    //     blendNode      overlay(Think)
+    //     /      \
+    //  from      to                        the crossfade: `to` is what you asked for
+    //
+    // The crossfade owns the bottom half; the mask layer is stacked on its root. That is the
+    // point of a tree — a layer does not have to know what it is layered over.
+    anim::CrossFade cross;
+    cross.play(&model.animations[0], 0.0f);   // first clip: nothing to fade from
+
+    anim::BlendTree& tree = cross.tree();
+
+    // Everything from the spine up: neck, head, both arms. Named by ONE joint, because the
+    // skeleton already knows what hangs off it — a hand-written list of joints goes stale the
+    // first time the rig changes.
+    const anim::JointMask upperBody = anim::JointMask::subtree(model.skeleton, "Spine");
+
+    const anim::Clip* thinkClip = model.findClip("Think");
+    const auto overlayNode = tree.addClip(thinkClip);
+    const auto maskNode    = tree.addMask(tree.root(), overlayNode, upperBody, 0.0f);
+    tree.setRoot(maskNode);
+
+    usize clipIndex = 0;
+    bool  maskOn    = std::getenv("VORTEX_MASK") != nullptr;
+    tree.setWeight(maskNode, maskOn ? 1.0f : 0.0f);
+
+    anim::Pose        pose;
+    std::vector<Mat4> skinning;
 
     renderer::Camera cam;
     cam.mode        = renderer::Camera::Mode::Perspective;
@@ -182,8 +298,17 @@ int main() {
     const char* clipEnv   = std::getenv("VORTEX_CLIP");
     if (clipEnv != nullptr) {
         const anim::Clip* c = model.findClip(clipEnv);
-        if (c != nullptr) player.play(c);
+        if (c != nullptr) cross.play(c, 0.0f);
     }
+
+    // Deterministic crossfade capture: switch clip at a given frame, so the screenshot at
+    // frame 30 lands part-way through the fade. A blended pose that matches neither endpoint
+    // is the only proof that anything is actually being blended.
+    const char* switchTo  = std::getenv("VORTEX_SWITCH_TO");
+    const u64   switchAt  = std::getenv("VORTEX_SWITCH_AT")
+                          ? std::strtoull(std::getenv("VORTEX_SWITCH_AT"), nullptr, 10) : 0;
+    const f32   fadeTime  = std::getenv("VORTEX_FADE")
+                          ? static_cast<f32>(std::atof(std::getenv("VORTEX_FADE"))) : 0.25f;
 
     u64 frameCount = 0;
     int lastW = fbw, lastH = fbh;
@@ -198,10 +323,12 @@ int main() {
         if (input->isKeyPressed(pf::Key::Escape)) break;
         if (maxFrames != 0 && frameCount >= maxFrames) break;
 
-        // Fixed steps while capturing, so an A/B image diff measures the change under test
-        // and not the fact that two runs reached the capture frame at different times.
-        const f32 dt = shotPath != nullptr ? 1.0f / 60.0f
-                                           : static_cast<f32>(clock->deltaTime());
+        // Fixed steps whenever this is a test run (a capture, or a capped frame count), so an
+        // A/B diff measures the change under test rather than the fact that two runs reached
+        // the same frame at slightly different times.
+        const bool deterministic = shotPath != nullptr || maxFrames != 0;
+        const f32  dt = deterministic ? 1.0f / 60.0f
+                                      : static_cast<f32>(clock->deltaTime());
         t += dt;
 
         const pf::Key digits[] = {pf::Key::Num1, pf::Key::Num2, pf::Key::Num3, pf::Key::Num4,
@@ -209,9 +336,20 @@ int main() {
         for (usize i = 0; i < model.animations.size() && i < 7; ++i)
             if (input->isKeyPressed(digits[i]) && clipIndex != i) {
                 clipIndex = i;
-                player.play(&model.animations[i]);
+                cross.play(&model.animations[i], fadeTime);   // fade, do not snap
                 VORTEX_INFO("App", "clip: %s", model.animations[i].name.c_str());
             }
+
+        if (input->isKeyPressed(pf::Key::M)) {
+            maskOn = !maskOn;
+            tree.setWeight(maskNode, maskOn ? 1.0f : 0.0f);
+            VORTEX_INFO("App", "upper-body overlay: %s", maskOn ? "on" : "off");
+        }
+
+        if (switchTo != nullptr && frameCount == switchAt) {
+            const anim::Clip* c = model.findClip(switchTo);
+            if (c != nullptr) cross.play(c, fadeTime);
+        }
 
         int w = 0, h = 0;
         window->getFramebufferSize(w, h);
@@ -222,9 +360,16 @@ int main() {
         if (w == 0 || h == 0) continue;
 
         // --- The three steps of a skinned frame ---
-        player.update(dt);                                  // 1. advance the clock
-        player.pose(model.skeleton, pose);                  // 2. sample -> a local pose
+        cross.update(dt);                                   // 1. advance every clock in the tree
+        cross.pose(model.skeleton, pose);                   // 2. evaluate the tree -> a pose
         model.skeleton.computeSkinningMatrices(pose, skinning);   // 3. -> skinning matrices
+
+        // Events fire only from clips that are actually being heard: a clip faded down to
+        // nothing keeps ticking (it must, or it would jump when faded back in) but stays quiet.
+        for (const anim::BlendTree::Fired& f : cross.firedEvents())
+            VORTEX_INFO("Event", "frame %llu  t=%.2fs  '%s'  (weight %.2f)",
+                        static_cast<unsigned long long>(frameCount), t,
+                        f.event->name.c_str(), f.weight);
 
         cam.aspect   = static_cast<f32>(w) / static_cast<f32>(h);
         cam.position = {std::sin(t * 0.25f) * 4.5f, 2.2f, std::cos(t * 0.25f) * 4.5f};
@@ -247,6 +392,36 @@ int main() {
                              .model = Mat4::translation(1.9f, 1.0f, -0.4f) *
                                       Mat4::rotationY(0.35f),
                              .material = grateMat});
+
+        // Morph: two weights, two curves. The mesh's SHAPE is animated; nothing is posed.
+        const f32 morphWeights[2] = {tallWeight.evaluate(t), spikyWeight.evaluate(t)};
+        blobSkinner->setMorphWeights(blobSkin, morphWeights, 2);
+        blobSkinner->setPose(blobSkin, nullptr, 0);   // no skeleton: shape only
+
+        renderer::MeshInstance blobInst;
+        blobInst.model    = Mat4::translation(-2.0f, 0.75f, -0.6f);
+        blobInst.material = blobMat;
+        blobSkinner->apply(blobSkin, blobInst);
+        instances.push_back(blobInst);
+
+        // A Transform driven by curves: a Catmull-Rom path with easing, and a rotation.
+        instances.push_back({.mesh  = cubeMesh,
+                             .model = Mat4::translation(hop.evaluate(t).x, hop.evaluate(t).y,
+                                                        hop.evaluate(t).z) *
+                                      spin.evaluate(t).toMat4(),
+                             .material = cubeMat});
+
+        // Four swatches, one per colour space, all at the same t. They must not agree — that
+        // disagreement IS the feature.
+        const f32 ct = 0.5f - 0.5f * std::cos(t * 1.2f);   // sweep 0 -> 1 -> 0
+        for (int i = 0; i < 4; ++i) {
+            const Color c = anim::mixColor(colorA, colorB, ct, spaces[i]);
+            instances.push_back({.mesh  = swatchMesh,
+                                 .model = Mat4::translation(-1.05f + 0.7f * static_cast<f32>(i),
+                                                            0.25f, 2.2f),
+                                 .color = {c.r, c.g, c.b, 1.0f},
+                                 .material = swatchMat});
+        }
         // Hand the pose to whichever backend is in play, then let it fill in the instance.
         // Nothing here knows or cares which one that is.
         for (const Part& part : parts) {

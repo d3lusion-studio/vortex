@@ -42,9 +42,17 @@ layout(set = 1, binding = 0) uniform Frame {
     mat4  invViewProj;
 } uFrame;
 
-struct Instance { mat4 prevModel; vec4 params; };
+struct Instance {
+    mat4 prevModel;
+    vec4 params;
+    vec4 morphInfo;
+    vec4 morphWeights[2];
+};
 layout(set = 1, binding = 1) readonly buffer Instances { Instance uInstances[]; };
 layout(set = 1, binding = 2) readonly buffer Bones { mat4 uBones[]; };
+
+struct MorphDelta { vec4 position; vec4 normal; };
+layout(set = 1, binding = 3) readonly buffer Morphs { MorphDelta uMorphs[]; };
 
 layout(location = 0) out vec2 vUV;
 
@@ -53,7 +61,20 @@ void main() {
 
     // Skin here too. Skip it and a character walks while its shadow stands in the bind pose,
     // which is far more obviously wrong than a slightly wrong shadow would be.
-    vec3  pos       = inPos;
+    // A morphed mesh must cast a morphed shadow, or its silhouette on the floor disagrees with
+    // the silhouette you can see.
+    vec3 pos = inPos;
+    int  morphCount = int(self.morphInfo.x);
+    if (morphCount > 0) {
+        int base        = int(self.params.w);
+        int vertexCount = int(self.morphInfo.y);
+        for (int i = 0; i < morphCount; ++i) {
+            float w = self.morphWeights[i / 4][i % 4];
+            if (w != 0.0)
+                pos += uMorphs[base + i * vertexCount + gl_VertexIndex].position.xyz * w;
+        }
+    }
+
     float boneCount = self.params.z;
     float total     = inWeights.x + inWeights.y + inWeights.z + inWeights.w;
     if (boneCount > 0.5 && total > 0.0001) {
@@ -62,7 +83,7 @@ void main() {
                   + uBones[base + int(inJoints.y)] * inWeights.y
                   + uBones[base + int(inJoints.z)] * inWeights.z
                   + uBones[base + int(inJoints.w)] * inWeights.w;
-        pos = (skin * vec4(inPos, 1.0)).xyz;
+        pos = (skin * vec4(pos, 1.0)).xyz;
     }
 
     vUV = inUV * uPush.params.y;

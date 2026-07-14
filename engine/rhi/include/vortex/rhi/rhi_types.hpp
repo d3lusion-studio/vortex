@@ -56,6 +56,11 @@ struct BindGroupDesc {
     BufferHandle  boneBuffer{};
     u64           boneSize = 0;
 
+    // Morph-target deltas for every mesh, end to end. A mesh is an offset into it — the shapes
+    // never change, so this is uploaded once and only the weights move per frame.
+    BufferHandle  morphBuffer{};
+    u64           morphSize = 0;
+
     // Scene set: everything the lit pass needs about the world rather than about
     // the surface — the two IBL cubemaps (irradiance + environment) and the shadow
     // map. They live in one set because a 3D pipeline only gets four, and the

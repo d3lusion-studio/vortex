@@ -2,6 +2,9 @@ vortex_add_module(anim
     SOURCES
         src/skeleton.cpp
         src/clip.cpp
+        src/pose.cpp
+        src/graph.cpp
+        src/curve.cpp
     PUBLIC_DEPS
         Vortex::core
 )

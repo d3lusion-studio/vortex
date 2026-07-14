@@ -93,12 +93,22 @@ layout(location = 11) out float vLightmap;
 // as firstInstance, so this costs no push-constant bytes — of which there are none left.
 // Per-instance data, indexed by gl_InstanceIndex. Carries what the 128-byte push block
 // cannot: the previous model matrix, and this instance's lightmap intensity.
-struct Instance { mat4 prevModel; vec4 params; };
+struct Instance {
+    mat4 prevModel;
+    vec4 params;        // lightmap, boneOffset, boneCount, morphBase
+    vec4 morphInfo;     // morphCount, vertexCount
+    vec4 morphWeights[2];
+};
 layout(set = 1, binding = 1) readonly buffer Instances { Instance uInstances[]; };
 
 // Skinning matrices for every skinned instance in the frame, end to end. This instance's
 // begin at params.y and there are params.z of them.
 layout(set = 1, binding = 2) readonly buffer Bones { mat4 uBones[]; };
+
+// Every mesh's morph deltas, laid out target-major. Uploaded once, at load: the shapes never
+// change, only the weights do — which is the whole reason morphing costs almost nothing.
+struct MorphDelta { vec4 position; vec4 normal; };
+layout(set = 1, binding = 3) readonly buffer Morphs { MorphDelta uMorphs[]; };
 
 // The one matrix that moves this vertex: its joints' poses, weighted. A vertex with no
 // weights at all (every static mesh in the scene) gets the identity and is left alone.
@@ -120,12 +130,33 @@ mat4 skinMatrix(uvec4 joints, vec4 weights, float boneOffset, float boneCount) {
 void main() {
     Instance self = uInstances[gl_InstanceIndex];
 
-    // Skin FIRST, in the mesh's own space, then apply the model matrix. The bones were built
-    // in model space, so posing after the model transform would apply it twice.
+    // Morph FIRST, then skin. Morphing changes the SHAPE (a mouth opens); skinning puts that
+    // shape into a POSE (the head turns). Do them the other way round and the deltas — which
+    // were authored in the mesh's own rest space — get added to a vertex that has already been
+    // moved somewhere else, and the face tears off the skull.
+    vec3 morphedPos    = inPos;
+    vec3 morphedNormal = inNormal;
+
+    int morphCount = int(self.morphInfo.x);
+    if (morphCount > 0) {
+        int base        = int(self.params.w);
+        int vertexCount = int(self.morphInfo.y);
+        for (int i = 0; i < morphCount; ++i) {
+            float w = self.morphWeights[i / 4][i % 4];
+            if (w == 0.0) continue;
+            MorphDelta d = uMorphs[base + i * vertexCount + gl_VertexIndex];
+            morphedPos    += d.position.xyz * w;
+            morphedNormal += d.normal.xyz * w;
+        }
+        morphedNormal = normalize(morphedNormal);
+    }
+
+    // Skin in the mesh's own space, then apply the model matrix. The bones were built in model
+    // space, so posing after the model transform would apply it twice.
     mat4 skin = skinMatrix(inJoints, inWeights, self.params.y, self.params.z);
-    vec3 skinnedPos    = (skin * vec4(inPos, 1.0)).xyz;
+    vec3 skinnedPos    = (skin * vec4(morphedPos, 1.0)).xyz;
     mat3 skinLinear    = mat3(skin);
-    vec3 skinnedNormal = skinLinear * inNormal;
+    vec3 skinnedNormal = skinLinear * morphedNormal;
     vec3 skinnedTan    = skinLinear * inTangent.xyz;
 
     vec4 world = vec4(modelPoint(skinnedPos), 1.0);

@@ -9,6 +9,7 @@
 #include "vortex/rhi/rhi_enums.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
 
+#include <string>
 #include <vector>
 
 namespace vortex::rhi {
@@ -278,15 +279,31 @@ struct MeshInstance {
     // buffer during submit and never looks at them again.
     const Mat4* bones     = nullptr;
     u32         boneCount = 0;
+
+    // How much of each of the mesh's morph targets to apply, in the order they were created.
+    // Also borrowed until the next begin().
+    const f32* morphWeights = nullptr;
+    u32        morphCount   = 0;
 };
 
 // ---------------------------------------------------------------------------
 // Mesh data + primitives
 // ---------------------------------------------------------------------------
 
+// A morph target is the mesh AS A DIFFERENCE: what to add to each vertex to get from the
+// neutral shape to this one. Deltas, not absolute positions — so a target that only moves the
+// mouth is zero everywhere else, and blending several of them at once (a smile AND a blink) is
+// just a weighted sum, which is exactly what an expression is.
+struct MorphTarget {
+    std::string       name;
+    std::vector<Vec3> positions;   // one per vertex; the delta from the neutral shape
+    std::vector<Vec3> normals;     // may be empty
+};
+
 struct MeshData {
-    std::vector<MeshVertex> vertices;
-    std::vector<u32>        indices;
+    std::vector<MeshVertex>  vertices;
+    std::vector<u32>         indices;
+    std::vector<MorphTarget> morphTargets;
 
     // Derive a tangent frame per vertex from the UVs. The primitives below already
     // call this; a custom mesh needs it before it can take a normal map.
@@ -336,10 +353,10 @@ public:
     [[nodiscard]] MeshHandle createMesh(const MeshVertex* vertices, usize vertexCount,
                                         const u32* indices, usize indexCount,
                                         bool dynamic = false);
-    [[nodiscard]] MeshHandle createMesh(const MeshData& data, bool dynamic = false) {
-        return createMesh(data.vertices.data(), data.vertices.size(),
-                          data.indices.data(), data.indices.size(), dynamic);
-    }
+    // The MeshData overload is the one that carries morph targets: they cannot be passed as
+    // loose pointers without also passing their count and their stride, and at that point it is
+    // a struct.
+    [[nodiscard]] MeshHandle createMesh(const MeshData& data, bool dynamic = false);
 
     // Rewrite a dynamic mesh's vertices. The buffer is host-visible, so this is a memcpy —
     // which is what makes CPU skinning viable at all. Creating the mesh without `dynamic`
@@ -509,7 +526,18 @@ private:
         u32               vertexCount = 0;
         bool              dynamic     = false;   // host-visible: updateMesh() may rewrite it
         bool              alive       = false;
-        MeshData          cpu;   // kept for ray casting
+        // Where this mesh's morph deltas start in the shared morph buffer, and how many
+        // targets it has. Every mesh's targets live in one buffer; a mesh is an offset into it.
+        u32               morphBase    = 0;
+        u32               morphTargets = 0;
+        MeshData          cpu;   // kept for ray casting (and CPU morphing)
+    };
+
+    // One vertex's delta for one target. vec4s, not vec3s: std430 would pad a vec3 to 16 bytes
+    // anyway, and pretending otherwise is how a buffer silently reads one field to the left.
+    struct GpuMorphDelta {
+        Vec4 position;
+        Vec4 normal;
     };
 
     struct GpuMaterial {
@@ -553,9 +581,16 @@ private:
         // x = lightmap intensity (0 = none)
         // y = this instance's first bone in the bone buffer
         // z = how many bones it has (0 = not skinned)
+        // w = where its mesh's morph deltas start in the morph buffer
         // The push block is at its 128-byte ceiling, and this is the buffer that exists
         // precisely for what will not fit there.
         Vec4 params;
+        // x = how many morph targets are active (0 = none), y = the mesh's vertex count
+        Vec4 morphInfo;
+        // Up to eight target weights. Eight is not a law of nature — it is what fits in two
+        // vec4s, and a face rig that needs more should be blending its expressions down to a
+        // handful before it gets here.
+        Vec4 morphWeights[2];
     };
 
     struct SkyUBO {
@@ -667,6 +702,14 @@ private:
     rhi::BufferHandle    m_boneBuffers[rhi::kMaxFramesInFlight];
     u32                  m_boneCapacity = 0;
     std::vector<Mat4>    m_boneData;
+
+    // Every mesh's morph deltas, uploaded once at mesh creation and never touched again — the
+    // shapes do not change, only the weights do. That is the whole reason morphing is cheap.
+    rhi::BufferHandle          m_morphBuffer;
+    u32                        m_morphCapacity = 0;
+    std::vector<GpuMorphDelta> m_morphData;
+    void appendMorphTargets(GpuMesh&, const MeshData&);
+    void rebuildFrameBindGroups();
 
     void ensureInstanceCapacity(u32 instances, u32 bones);
     rhi::BufferHandle    m_skyBuffers[rhi::kMaxFramesInFlight];

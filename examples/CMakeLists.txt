@@ -149,3 +149,9 @@ target_link_libraries(bloom2d PRIVATE Vortex::vortex)
 
 add_executable(skinned skinned/main.cpp)
 target_link_libraries(skinned PRIVATE Vortex::vortex)
+
+add_executable(ui_anim ui_anim/main.cpp)
+target_link_libraries(ui_anim PRIVATE Vortex::vortex)
+
+add_executable(camera3d camera3d/main.cpp)
+target_link_libraries(camera3d PRIVATE Vortex::vortex)

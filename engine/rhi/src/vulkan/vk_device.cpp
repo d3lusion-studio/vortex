@@ -136,16 +136,16 @@ VulkanDevice::VulkanDevice(pf::IWindow& window) {
     // skinning matrices at binding 2. A separate layout rather than extra bindings on the
     // one above, so the 2D pipelines that only ever want the uniform are not forced to bind
     // buffers they never read.
-    VkDescriptorSetLayoutBinding frameBindings[3]{};
+    VkDescriptorSetLayoutBinding frameBindings[4]{};
     frameBindings[0] = uboBinding;
-    for (u32 i = 1; i < 3; ++i) {
+    for (u32 i = 1; i < 4; ++i) {
         frameBindings[i].binding         = i;
         frameBindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         frameBindings[i].descriptorCount = 1;
         frameBindings[i].stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     }
     VkDescriptorSetLayoutCreateInfo frameLayoutCI{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    frameLayoutCI.bindingCount = 3;
+    frameLayoutCI.bindingCount = 4;
     frameLayoutCI.pBindings    = frameBindings;
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &frameLayoutCI, nullptr, &m_frameSetLayout));
 
@@ -724,12 +724,13 @@ BindGroupHandle VulkanDevice::createBindGroup(const BindGroupDesc& desc) {
         VK_CHECK(vkAllocateDescriptorSets(m_device, &uai, &group.set));
 
         VulkanBuffer* bones = m_buffers.get(desc.boneBuffer);
+        VulkanBuffer* morph = m_buffers.get(desc.morphBuffer);
 
-        VkDescriptorBufferInfo infos[3]{};
+        VkDescriptorBufferInfo infos[4]{};
         infos[0].buffer = buf->buffer;
         infos[0].range  = desc.uniformSize > 0 ? desc.uniformSize : buf->size;
 
-        VkWriteDescriptorSet writes[3]{};
+        VkWriteDescriptorSet writes[4]{};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet          = group.set;
         writes[0].dstBinding      = 0;
@@ -761,6 +762,18 @@ BindGroupHandle VulkanDevice::createBindGroup(const BindGroupDesc& desc) {
             writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[2].pBufferInfo     = &infos[2];
             count = 3;
+        }
+        if (morph) {
+            infos[3].buffer = morph->buffer;
+            infos[3].range  = desc.morphSize > 0 ? desc.morphSize : morph->size;
+
+            writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[3].dstSet          = group.set;
+            writes[3].dstBinding      = 3;
+            writes[3].descriptorCount = 1;
+            writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[3].pBufferInfo     = &infos[3];
+            count = 4;
         }
         vkUpdateDescriptorSets(m_device, count, writes, 0, nullptr);
         return m_bindGroups.create(group);

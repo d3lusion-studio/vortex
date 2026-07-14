@@ -47,6 +47,11 @@ public:
     // in (anim::Skeleton::computeSkinningMatrices produces exactly this).
     virtual void setPose(SkinHandle, const Mat4* bones, u32 boneCount) = 0;
 
+    // How much of each of the mesh's morph targets to apply. Morphing changes the SHAPE, posing
+    // puts that shape into a POSE — and in that order, on both backends, because the deltas were
+    // authored in the mesh's rest space.
+    virtual void setMorphWeights(SkinHandle, const f32* weights, u32 count) = 0;
+
     // Fill in whatever `inst` needs to be drawn in that pose. What it fills differs by
     // backend — a mesh handle here, a bone pointer there — and that is the difference the
     // caller is spared.

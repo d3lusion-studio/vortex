@@ -1,6 +1,7 @@
 #include "vortex/anim/clip.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace vortex::anim {
 
@@ -64,6 +65,17 @@ void Clip::sample(f32 time, std::vector<Transform>& out) const {
     }
 }
 
+void Clip::addEvent(f32 time, std::string name) {
+    events.push_back({time, std::move(name)});
+    std::sort(events.begin(), events.end(),
+              [](const Event& a, const Event& b) { return a.time < b.time; });
+}
+
+void Clip::eventsIn(f32 from, f32 to, std::vector<const Event*>& out) const {
+    for (const Event& e : events)
+        if (e.time > from && e.time <= to) out.push_back(&e);
+}
+
 void Player::play(const Clip* clip, bool restart) {
     if (m_clip == clip && !restart) return;
     m_clip     = clip;
@@ -72,23 +84,44 @@ void Player::play(const Clip* clip, bool restart) {
 }
 
 void Player::update(f32 dt) {
+    m_fired.clear();
     if (m_clip == nullptr || m_finished) return;
 
+    const f32 previous = m_time;
     m_time += dt * speed;
 
     const f32 duration = m_clip->duration;
     if (duration <= 0.0f) { m_time = 0.0f; return; }
 
+    const bool forward = dt * speed >= 0.0f;
+
     if (m_clip->loop) {
+        const f32 raw = m_time;
         m_time = std::fmod(m_time, duration);
         if (m_time < 0.0f) m_time += duration;   // playing backwards wraps too
-    } else if (m_time >= duration) {
+
+        if (forward) {
+            if (raw >= duration) {
+                // The step crossed the loop point. Fire the tail of the timeline and then its
+                // head — dropping either would swallow an event whenever a frame happened to
+                // land on the wrap, which surfaces only as "the sound sometimes doesn't play".
+                m_clip->eventsIn(previous, duration, m_fired);
+                m_clip->eventsIn(0.0f, m_time, m_fired);
+            } else {
+                m_clip->eventsIn(previous, m_time, m_fired);
+            }
+        }
+        return;
+    }
+
+    if (m_time >= duration) {
         m_time     = duration;
         m_finished = true;
     } else if (m_time < 0.0f) {
         m_time     = 0.0f;
         m_finished = true;
     }
+    if (forward) m_clip->eventsIn(previous, m_time, m_fired);
 }
 
 void Player::pose(const Skeleton& skeleton, std::vector<Transform>& out) const {
