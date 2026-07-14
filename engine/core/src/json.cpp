@@ -65,6 +65,19 @@ Value& Value::set(std::string key, Value value) {
     return m_object.back().second;
 }
 
+Value& Value::at(std::string_view key) {
+    if (m_type != Type::Object) {
+        // Turning a non-object into one loses whatever it held. That is the honest outcome: a
+        // caller asking for a member of a number has already contradicted itself, and silently
+        // doing nothing would hide it.
+        *this = Value::object();
+    }
+    for (auto& [k, v] : m_object)
+        if (k == key) return v;
+    m_object.emplace_back(std::string(key), Value{});
+    return m_object.back().second;
+}
+
 const Value& Value::operator[](usize index) const {
     if (m_type != Type::Array || index >= m_array.size()) return nullValue();
     return m_array[index];

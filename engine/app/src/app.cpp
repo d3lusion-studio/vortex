@@ -4,6 +4,9 @@
 #include "vortex/audio/audio.hpp"
 #include "vortex/core/json.hpp"
 #include "vortex/core/log.hpp"
+
+#include <cstdlib>
+#include "vortex/core/settings.hpp"
 #include "vortex/core/math/scalar.hpp"
 #include "vortex/core/profiler.hpp"
 #include "vortex/jobs/job_system.hpp"
@@ -67,11 +70,19 @@ struct App::Impl {
     bool                                              audioTried = false;
     std::unordered_map<std::string, audio::SoundHandle> sounds;
 
-    App::StartFn  startFn;
-    App::UpdateFn updateFn;
-    App::UpdateFn fixedUpdateFn;
-    App::RenderFn renderFn;
-    App::StartFn  shutdownFn;
+    // Lists, not single slots. See the note on App::onUpdate: with one slot, two plugins that
+    // both want a frame hook cannot coexist, and the failure is silent.
+    std::vector<App::StartFn>  startFns;
+    std::vector<App::UpdateFn> updateFns;
+    std::vector<App::UpdateFn> fixedUpdateFns;
+    std::vector<App::RenderFn> renderFns;
+    std::vector<App::StartFn>  shutdownFns;
+
+    std::vector<std::unique_ptr<IPlugin>> plugins;
+    std::vector<std::string>              pluginNames;
+
+    Settings    settings;
+    std::string settingsPath;
 
     std::vector<renderer::RenderItem> items;
 
@@ -94,6 +105,23 @@ struct App::Impl {
 App::App(AppConfig config) : m_impl(std::make_unique<Impl>()) {
     Impl& s  = *m_impl;
     s.config = config;
+
+    // The environment gets the first word on logging, before anything has a chance to log.
+    initLogFromEnv();
+
+    // A headless/CI frame cap, without every game having to parse it for itself.
+    if (s.config.maxFrames == 0)
+        if (const char* env = std::getenv("VORTEX_MAX_FRAMES"))
+            s.config.maxFrames = std::strtoull(env, nullptr, 10);
+
+    if (config.settingsName != nullptr) {
+        s.settingsPath = Settings::defaultPath(config.settingsName);
+        if (!s.settingsPath.empty()) {
+            const bool found = s.settings.load(s.settingsPath.c_str());
+            VORTEX_TRACE("Settings", "%s: %s", s.settingsPath.c_str(),
+                         found ? "loaded" : "no file yet (first run)");
+        }
+    }
 
     s.window = pf::createWindow({.width  = config.width,
                                  .height = config.height,
@@ -143,11 +171,56 @@ App::~App() {
     }
 }
 
-App& App::onStart(StartFn fn)        { m_impl->startFn       = std::move(fn); return *this; }
-App& App::onUpdate(UpdateFn fn)      { m_impl->updateFn      = std::move(fn); return *this; }
-App& App::onFixedUpdate(UpdateFn fn) { m_impl->fixedUpdateFn = std::move(fn); return *this; }
-App& App::onRender(RenderFn fn)      { m_impl->renderFn      = std::move(fn); return *this; }
-App& App::onShutdown(StartFn fn)     { m_impl->shutdownFn    = std::move(fn); return *this; }
+App& App::onStart(StartFn fn) {
+    if (fn) m_impl->startFns.push_back(std::move(fn));
+    return *this;
+}
+App& App::onUpdate(UpdateFn fn) {
+    if (fn) m_impl->updateFns.push_back(std::move(fn));
+    return *this;
+}
+App& App::onFixedUpdate(UpdateFn fn) {
+    if (fn) m_impl->fixedUpdateFns.push_back(std::move(fn));
+    return *this;
+}
+App& App::onRender(RenderFn fn) {
+    if (fn) m_impl->renderFns.push_back(std::move(fn));
+    return *this;
+}
+App& App::onShutdown(StartFn fn) {
+    if (fn) m_impl->shutdownFns.push_back(std::move(fn));
+    return *this;
+}
+
+App& App::addPlugin(std::unique_ptr<IPlugin> plugin) {
+    if (!plugin) return *this;
+
+    const char* name = plugin->name();
+    VORTEX_TRACE("Plugin", "building '%s'", name);
+
+    // Build FIRST, then keep it: build() is where the plugin registers its hooks, and the App must
+    // outlive them, which it does — the plugin list is destroyed with the App.
+    plugin->build(*this);
+
+    m_impl->pluginNames.emplace_back(name);
+    m_impl->plugins.push_back(std::move(plugin));
+    return *this;
+}
+
+App& App::addPlugins(PluginGroup group) {
+    for (PluginGroup::Entry& e : group.entries()) {
+        if (!e.enabled) {
+            VORTEX_TRACE("Plugin", "skipping disabled '%s'", e.plugin->name());
+            continue;
+        }
+        addPlugin(std::move(e.plugin));
+    }
+    return *this;
+}
+
+const std::vector<std::string>& App::plugins() const { return m_impl->pluginNames; }
+
+Settings& App::settings() { return m_impl->settings; }
 
 void App::quit() { m_impl->quitRequested = true; }
 
@@ -281,7 +354,7 @@ f32 App::fixedAlpha() const {
 int App::run() {
     Impl& s = *m_impl;
 
-    if (s.startFn) s.startFn(*this);
+    for (const auto& fn : s.startFns) fn(*this);
 
     while (!s.window->shouldClose() && !s.quitRequested) {
         if (s.config.maxFrames != 0 && s.frames >= s.config.maxFrames) break;
@@ -320,20 +393,20 @@ int App::run() {
         physics::PhysicsWorld* world =
             physicsIt != s.physics.end() ? physicsIt->second.get() : nullptr;
 
-        if ((s.fixedUpdateFn || world != nullptr) && s.config.fixedTimeStep > 0.0f) {
+        if ((!s.fixedUpdateFns.empty() || world != nullptr) && s.config.fixedTimeStep > 0.0f) {
             VORTEX_PROFILE_ZONE("app.fixedUpdate");
             s.accumulator += s.delta;
             while (s.accumulator >= s.config.fixedTimeStep) {
                 if (world != nullptr)
                     world->step(s.scenes.active().registry(), s.config.fixedTimeStep);
-                if (s.fixedUpdateFn) s.fixedUpdateFn(*this, s.config.fixedTimeStep);
+                for (const auto& fn : s.fixedUpdateFns) fn(*this, s.config.fixedTimeStep);
                 s.accumulator -= s.config.fixedTimeStep;
             }
         }
 
         {
             VORTEX_PROFILE_ZONE("app.update");
-            if (s.updateFn) s.updateFn(*this, s.delta);
+            for (const auto& fn : s.updateFns) fn(*this, s.delta);
             if (s.config.parallelExtract) s.scenes.active().update(s.delta, *s.jobs);
             else                          s.scenes.active().update(s.delta);
         }
@@ -359,7 +432,7 @@ int App::run() {
             else                          s.scenes.active().extract(s.items);
         }
         if (!s.items.empty()) s.batch->submit(s.items.data(), s.items.size());
-        if (s.renderFn) s.renderFn(*this, *s.batch);
+        for (const auto& fn : s.renderFns) fn(*this, *s.batch);
 
         if (s.post) {
             // Sprites into an HDR target, then bloom and tone mapping resolve it to the screen.
@@ -410,7 +483,16 @@ int App::run() {
         }
     }
 
-    if (s.shutdownFn) s.shutdownFn(*this);
+    // Reverse order: a plugin that set something up during start should tear it down after the
+    // things registered after it, which may depend on it.
+    // Reverse order: a plugin that set something up during start should tear it down after the
+    // things registered after it, which may depend on it.
+    for (auto it = s.shutdownFns.rbegin(); it != s.shutdownFns.rend(); ++it) (*it)(*this);
+
+    // Settings are written AFTER shutdown hooks, so a hook that records "the player quit on
+    // level 4" is in the file that gets saved rather than in the one that was already written.
+    if (!s.settingsPath.empty() && !s.settings.save(s.settingsPath.c_str()))
+        VORTEX_WARN("Settings", "could not write %s", s.settingsPath.c_str());
     s.device->waitIdle();
     return 0;
 }

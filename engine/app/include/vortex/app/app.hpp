@@ -1,4 +1,6 @@
 #pragma once
+#include "vortex/app/plugin.hpp"
+#include "vortex/core/settings.hpp"
 #include "vortex/app/scene_manager.hpp"
 #include "vortex/audio/audio.hpp"
 #include "vortex/core/math/color.hpp"
@@ -57,9 +59,21 @@ struct AppConfig {
     bool parallelExtract = false;
     u32  workerCount     = 0;   // 0 = hardware concurrency
 
-    // Stop after this many frames. 0 runs until the window closes; anything else
-    // is for headless/CI runs.
+    // Stop after this many frames. 0 runs until the window closes.
+    //
+    // Left at 0, the VORTEX_MAX_FRAMES environment variable is honoured instead, so any App-based
+    // game is runnable in CI without a line of code for it. An explicit non-zero value here wins:
+    // a program that means to run for exactly N frames should not have that overridden by a shell.
     u64 maxFrames = 0;
+
+    // Settings are loaded from the user's config directory under this name at construction, and
+    // written back at shutdown. Null disables the file entirely — a demo does not need one.
+    //
+    // The load happens in the App CONSTRUCTOR, which means it is too late to use a saved
+    // resolution to size the window. That is deliberate: read the Settings yourself first, fill
+    // this AppConfig from it, and hand it over. A config that reads itself from a file it also
+    // owns is a circle, and the version that resolves it silently always resolves it wrong.
+    const char* settingsName = nullptr;
 
     // Handed to every PhysicsWorld App creates. fixedStep is overwritten with
     // fixedTimeStep above, so the solver and the game loop cannot drift apart.
@@ -90,12 +104,36 @@ public:
     App(const App&)            = delete;
     App& operator=(const App&) = delete;
 
-    // Callbacks are chainable and each replaces the previously registered one.
+    // Callbacks are chainable and APPEND: registering a second one does not delete the first,
+    // and they run in registration order.
+    //
+    // This used to replace. It had to change for plugins to be possible at all: a debug overlay
+    // and a gameplay system both want to run every frame, and under the old rule whichever
+    // registered last silently deleted the other. A game that only registers each hook once —
+    // which is every one in this repo — sees no difference.
     App& onStart(StartFn fn);
     App& onUpdate(UpdateFn fn);        // variable rate, once per frame
     App& onFixedUpdate(UpdateFn fn);   // fixed rate, 0..N times per frame
     App& onRender(RenderFn fn);        // extra sprites, batched with the scene's
     App& onShutdown(StartFn fn);
+
+    // --- Plugins ---------------------------------------------------------------
+    //
+    // A plugin's build() runs immediately, not at run(): the App is already constructed, so the
+    // device, assets and scene are there to be used. Deferring it would buy nothing and mean a
+    // plugin could not report a failure until the game was already running.
+    App& addPlugin(std::unique_ptr<IPlugin> plugin);
+
+    template <typename T, typename... Args>
+    App& addPlugin(Args&&... args) {
+        return addPlugin(std::make_unique<T>(std::forward<Args>(args)...));
+    }
+
+    // Build every enabled plugin in the group, in order.
+    App& addPlugins(PluginGroup group);
+
+    // The names of the plugins that were built, in build order.
+    [[nodiscard]] const std::vector<std::string>& plugins() const;
 
     // Runs until the window closes, quit() is called, or maxFrames is reached.
     int  run();
@@ -162,6 +200,10 @@ public:
     // The handle-to-name mapping the two calls above use. Take a copy of it to drive
     // ecs::savePrefab / ecs::instantiate yourself.
     [[nodiscard]] const ecs::SerializeContext& serializeContext() const;
+
+    // Named values that persist across runs — volume, keybinds, "have we shown the tutorial".
+    // Empty and unbacked unless AppConfig::settingsName was set; written back at shutdown.
+    [[nodiscard]] Settings& settings();
 
     // Live post-processing knobs — threshold, intensity, exposure, and whether bloom and
     // FXAA run at all. Read every frame, so a game can fade the bloom up as it likes.

@@ -50,6 +50,11 @@ public:
     [[nodiscard]] bool         contains(std::string_view key) const;
     Value&                     set(std::string key, Value value);
 
+    // The stored value for `key`, creating it (as null) if it is not there. This is what lets a
+    // caller walk INTO a nested object and edit it in place; without it, building a path means
+    // copying each level back over itself, which works and is nonsense.
+    Value&                     at(std::string_view key);
+
     // Array access. Out-of-range reads back as null.
     [[nodiscard]] const Value& operator[](usize index) const;
     Value&                     push(Value value);

@@ -155,3 +155,12 @@ target_link_libraries(ui_anim PRIVATE Vortex::vortex)
 
 add_executable(camera3d camera3d/main.cpp)
 target_link_libraries(camera3d PRIVATE Vortex::vortex)
+
+add_executable(app_empty app_empty/main.cpp)
+target_link_libraries(app_empty PRIVATE Vortex::vortex)
+
+add_executable(app_plugin app_plugin/main.cpp)
+target_link_libraries(app_plugin PRIVATE Vortex::vortex)
+
+add_executable(app_settings app_settings/main.cpp)
+target_link_libraries(app_settings PRIVATE Vortex::vortex)
