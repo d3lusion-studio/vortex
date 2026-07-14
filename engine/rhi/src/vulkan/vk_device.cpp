@@ -132,17 +132,20 @@ VulkanDevice::VulkanDevice(pf::IWindow& window) {
     uboLayoutCI.pBindings    = &uboBinding;
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &uboLayoutCI, nullptr, &m_uniformSetLayout));
 
-    // The same uniform buffer, plus a per-instance storage buffer at binding 1. A
-    // separate layout rather than an extra binding on the one above, so the 2D pipelines
-    // that only ever want the uniform are not forced to bind a buffer they never read.
-    VkDescriptorSetLayoutBinding frameBindings[2]{};
+    // The same uniform buffer, plus a per-instance storage buffer at binding 1 and the
+    // skinning matrices at binding 2. A separate layout rather than extra bindings on the
+    // one above, so the 2D pipelines that only ever want the uniform are not forced to bind
+    // buffers they never read.
+    VkDescriptorSetLayoutBinding frameBindings[3]{};
     frameBindings[0] = uboBinding;
-    frameBindings[1].binding         = 1;
-    frameBindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    frameBindings[1].descriptorCount = 1;
-    frameBindings[1].stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    for (u32 i = 1; i < 3; ++i) {
+        frameBindings[i].binding         = i;
+        frameBindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        frameBindings[i].descriptorCount = 1;
+        frameBindings[i].stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
     VkDescriptorSetLayoutCreateInfo frameLayoutCI{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    frameLayoutCI.bindingCount = 2;
+    frameLayoutCI.bindingCount = 3;
     frameLayoutCI.pBindings    = frameBindings;
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &frameLayoutCI, nullptr, &m_frameSetLayout));
 
@@ -720,11 +723,13 @@ BindGroupHandle VulkanDevice::createBindGroup(const BindGroupDesc& desc) {
         VulkanBindGroup group{};
         VK_CHECK(vkAllocateDescriptorSets(m_device, &uai, &group.set));
 
-        VkDescriptorBufferInfo infos[2]{};
+        VulkanBuffer* bones = m_buffers.get(desc.boneBuffer);
+
+        VkDescriptorBufferInfo infos[3]{};
         infos[0].buffer = buf->buffer;
         infos[0].range  = desc.uniformSize > 0 ? desc.uniformSize : buf->size;
 
-        VkWriteDescriptorSet writes[2]{};
+        VkWriteDescriptorSet writes[3]{};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet          = group.set;
         writes[0].dstBinding      = 0;
@@ -744,6 +749,18 @@ BindGroupHandle VulkanDevice::createBindGroup(const BindGroupDesc& desc) {
             writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[1].pBufferInfo     = &infos[1];
             count = 2;
+        }
+        if (bones) {
+            infos[2].buffer = bones->buffer;
+            infos[2].range  = desc.boneSize > 0 ? desc.boneSize : bones->size;
+
+            writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[2].dstSet          = group.set;
+            writes[2].dstBinding      = 2;
+            writes[2].descriptorCount = 1;
+            writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[2].pBufferInfo     = &infos[2];
+            count = 3;
         }
         vkUpdateDescriptorSets(m_device, count, writes, 0, nullptr);
         return m_bindGroups.create(group);

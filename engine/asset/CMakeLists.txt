@@ -4,12 +4,15 @@ vortex_add_module(asset
         src/image.cpp
         src/cooked_texture.cpp
         src/tiled.cpp
+        src/gltf.cpp
     PUBLIC_DEPS
         Vortex::core
         Vortex::rhi
-        # An importer produces renderer types — a Tiled map *is* a renderer::Tilemap —
-        # so these headers travel with the module.
+        # An importer produces renderer types — a Tiled map *is* a renderer::Tilemap, a
+        # glTF *is* a renderer::MeshData plus an anim::Skeleton — so these headers travel
+        # with the module.
         Vortex::renderer
+        Vortex::anim
     PRIVATE_DEPS
         Vortex::platform
 )

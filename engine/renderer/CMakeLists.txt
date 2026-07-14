@@ -36,6 +36,7 @@ vortex_add_module(renderer
         src/tilemap.cpp
         src/render_graph.cpp
         src/mesh.cpp
+        src/skinning.cpp
         src/post_process.cpp
         ${_vert_header}
         ${_frag_header}

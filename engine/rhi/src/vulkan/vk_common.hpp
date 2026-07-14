@@ -55,6 +55,7 @@ namespace vortex::rhi::vk {
         case VertexFormat::Float4:   return VK_FORMAT_R32G32B32A32_SFLOAT;
         case VertexFormat::UNorm4x8: return VK_FORMAT_R8G8B8A8_UNORM;
         case VertexFormat::UInt1:    return VK_FORMAT_R32_UINT;
+        case VertexFormat::UInt4x8:  return VK_FORMAT_R8G8B8A8_UINT;
     }
     return VK_FORMAT_UNDEFINED;
 }

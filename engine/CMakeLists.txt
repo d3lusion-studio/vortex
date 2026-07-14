@@ -3,6 +3,7 @@ add_subdirectory(platform)
 add_subdirectory(rhi)
 add_subdirectory(jobs)
 add_subdirectory(renderer)
+add_subdirectory(anim)
 add_subdirectory(ecs)
 add_subdirectory(asset)
 add_subdirectory(text)
@@ -22,6 +23,7 @@ target_link_libraries(vortex_all INTERFACE
     Vortex::rhi
     Vortex::jobs
     Vortex::renderer
+    Vortex::anim
     Vortex::ecs
     Vortex::asset
     Vortex::text

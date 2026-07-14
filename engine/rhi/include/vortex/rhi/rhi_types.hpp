@@ -51,6 +51,11 @@ struct BindGroupDesc {
     BufferHandle  storageBuffer{};
     u64           storageSize = 0;
 
+    // Skinning matrices for every skinned instance this frame, end to end. An instance
+    // finds its own by the offset it carries in the storage buffer above.
+    BufferHandle  boneBuffer{};
+    u64           boneSize = 0;
+
     // Scene set: everything the lit pass needs about the world rather than about
     // the surface — the two IBL cubemaps (irradiance + environment) and the shadow
     // map. They live in one set because a 3D pipeline only gets four, and the

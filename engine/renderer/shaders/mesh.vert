@@ -10,6 +10,8 @@ layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec4 inTangent;   // xyz = tangent, w = handedness (+1/-1)
 layout(location = 4) in vec4 inColor;     // per-vertex tint
 layout(location = 5) in vec2 inUV1;      // the lightmap's non-overlapping unwrap
+layout(location = 6) in uvec4 inJoints;  // up to four bones move this vertex
+layout(location = 7) in vec4  inWeights;
 
 struct Light {
     vec4 position;    // xyz = world position, w = type (0 dir, 1 point, 2 spot)
@@ -94,26 +96,59 @@ layout(location = 11) out float vLightmap;
 struct Instance { mat4 prevModel; vec4 params; };
 layout(set = 1, binding = 1) readonly buffer Instances { Instance uInstances[]; };
 
+// Skinning matrices for every skinned instance in the frame, end to end. This instance's
+// begin at params.y and there are params.z of them.
+layout(set = 1, binding = 2) readonly buffer Bones { mat4 uBones[]; };
+
+// The one matrix that moves this vertex: its joints' poses, weighted. A vertex with no
+// weights at all (every static mesh in the scene) gets the identity and is left alone.
+mat4 skinMatrix(uvec4 joints, vec4 weights, float boneOffset, float boneCount) {
+    if (boneCount < 0.5) return mat4(1.0);
+
+    float total = weights.x + weights.y + weights.z + weights.w;
+    if (total < 0.0001) return mat4(1.0);
+
+    int base = int(boneOffset);
+    mat4 m = uBones[base + int(joints.x)] * weights.x;
+    m     += uBones[base + int(joints.y)] * weights.y;
+    m     += uBones[base + int(joints.z)] * weights.z;
+    m     += uBones[base + int(joints.w)] * weights.w;
+    return m;
+}
+
+
 void main() {
-    vec4 world = vec4(modelPoint(inPos), 1.0);
+    Instance self = uInstances[gl_InstanceIndex];
+
+    // Skin FIRST, in the mesh's own space, then apply the model matrix. The bones were built
+    // in model space, so posing after the model transform would apply it twice.
+    mat4 skin = skinMatrix(inJoints, inWeights, self.params.y, self.params.z);
+    vec3 skinnedPos    = (skin * vec4(inPos, 1.0)).xyz;
+    mat3 skinLinear    = mat3(skin);
+    vec3 skinnedNormal = skinLinear * inNormal;
+    vec3 skinnedTan    = skinLinear * inTangent.xyz;
+
+    vec4 world = vec4(modelPoint(skinnedPos), 1.0);
     vWorldPos  = world.xyz;
 
     // Normal matrix = transpose(inverse(model3x3)); correct under non-uniform scale.
     mat3 nrm   = transpose(inverse(modelLinear()));
-    vNormal    = normalize(nrm * inNormal);
-    vTangent   = normalize(nrm * inTangent.xyz);
+    vNormal    = normalize(nrm * skinnedNormal);
+    vTangent   = normalize(nrm * skinnedTan);
     vBitangent = cross(vNormal, vTangent) * inTangent.w;
 
     vUV       = inUV * uPush.params.y;
     vColor    = inColor;
     vUV1      = inUV1;
-    vLightmap = uInstances[gl_InstanceIndex].params.x;
+    vLightmap = self.params.x;
     vLightPos = uFrame.lightViewProj * world;
 
     mat3 TBN = mat3(vTangent, vBitangent, vNormal);
     vViewTS  = transpose(TBN) * (uFrame.cameraPos.xyz - vWorldPos);
 
-    vec4 prevWorld = uInstances[gl_InstanceIndex].prevModel * vec4(inPos, 1.0);
+    // NOTE: skinned by THIS frame's pose, not last frame's — the previous pose is not
+    // kept. So a limb swinging in place reports no velocity; the body's motion still does.
+    vec4 prevWorld = self.prevModel * vec4(skinnedPos, 1.0);
     vPrevClip = uFrame.prevViewProj * prevWorld;
     vCurClip  = uFrame.viewProj * world;
 

@@ -1,5 +1,6 @@
 #include "vortex/renderer/mesh.hpp"
 
+#include "vortex/core/assert.hpp"
 #include "vortex/core/profiler.hpp"
 #include "vortex/rhi/command_list.hpp"
 #include "vortex/rhi/device.hpp"
@@ -470,11 +471,17 @@ MeshRenderer::MeshRenderer(rhi::IGraphicsDevice& device, rhi::Format colorFormat
     sd.vertexLayout.stride = sizeof(MeshVertex);
     sd.vertexLayout.attributes = {
         {.location = 0, .format = rhi::VertexFormat::Float3, .offset = offsetof(MeshVertex, position)},
+        {.location = 2, .format = rhi::VertexFormat::Float2, .offset = offsetof(MeshVertex, uv)},
+        {.location = 6, .format = rhi::VertexFormat::UInt4x8, .offset = offsetof(MeshVertex, joints)},
+        {.location = 7, .format = rhi::VertexFormat::Float4,  .offset = offsetof(MeshVertex, weights)},
     };
     sd.topology         = rhi::PrimitiveTopology::TriangleList;
     sd.cull             = rhi::CullMode::Back;
     sd.colorFormat      = rhi::Format::Undefined;   // depth-only
-    sd.pushConstantSize = sizeof(Mat4);
+    sd.pushConstantSize  = sizeof(ShadowPush);
+    sd.hasPbrMaterial    = true;   // set 0: the albedo, for the cutout alpha test
+    sd.hasUniformBuffer  = true;   // set 1: frame data
+    sd.hasInstanceBuffer = true;   // ... with the instances and bones hanging off it
     sd.depthTest        = true;
     sd.depthWrite       = true;
     sd.depthCompare     = rhi::CompareOp::LessEqual;
@@ -516,6 +523,8 @@ MeshRenderer::MeshRenderer(rhi::IGraphicsDevice& device, rhi::Format colorFormat
         {.location = 3, .format = rhi::VertexFormat::Float4, .offset = offsetof(MeshVertex, tangent)},
         {.location = 4, .format = rhi::VertexFormat::Float4, .offset = offsetof(MeshVertex, color)},
         {.location = 5, .format = rhi::VertexFormat::Float2, .offset = offsetof(MeshVertex, uv1)},
+        {.location = 6, .format = rhi::VertexFormat::UInt4x8, .offset = offsetof(MeshVertex, joints)},
+        {.location = 7, .format = rhi::VertexFormat::Float4,  .offset = offsetof(MeshVertex, weights)},
     };
     gd.topology           = rhi::PrimitiveTopology::TriangleList;
     gd.cull               = rhi::CullMode::Back;
@@ -692,31 +701,41 @@ MeshRenderer::MeshRenderer(rhi::IGraphicsDevice& device, rhi::Format colorFormat
 
     m_defaultMaterial = createMaterial(MaterialDesc{});
     m_unitCube        = createMesh(makeCube(1.0f));
-    ensureInstanceCapacity(256);
+    ensureInstanceCapacity(256, 256);
 }
 
-void MeshRenderer::ensureInstanceCapacity(u32 count) {
-    if (count <= m_instanceCapacity) return;
+void MeshRenderer::ensureInstanceCapacity(u32 instances, u32 bones) {
+    if (instances <= m_instanceCapacity && bones <= m_boneCapacity) return;
 
     // Grow by doubling, so a scene that creeps upward does not reallocate every frame.
-    u32 cap = m_instanceCapacity > 0 ? m_instanceCapacity : 256;
-    while (cap < count) cap *= 2;
+    u32 icap = m_instanceCapacity > 0 ? m_instanceCapacity : 256;
+    while (icap < instances) icap *= 2;
+    u32 bcap = m_boneCapacity > 0 ? m_boneCapacity : 256;
+    while (bcap < bones) bcap *= 2;
 
     m_device.waitIdle();   // the old buffers may still be in flight
     for (u32 i = 0; i < rhi::kMaxFramesInFlight; ++i) {
         if (m_uniformBindGroups[i].valid()) m_device.destroyBindGroup(m_uniformBindGroups[i]);
         if (m_instanceBuffers[i].valid())   m_device.destroyBuffer(m_instanceBuffers[i]);
+        if (m_boneBuffers[i].valid())       m_device.destroyBuffer(m_boneBuffers[i]);
 
         m_instanceBuffers[i] = m_device.createBuffer(
-            {.size = static_cast<u64>(cap) * sizeof(GpuInstance),
+            {.size = static_cast<u64>(icap) * sizeof(GpuInstance),
              .usage = rhi::BufferUsage::Storage, .domain = rhi::MemoryDomain::Upload,
              .debugName = "mesh_instances"});
+        m_boneBuffers[i] = m_device.createBuffer(
+            {.size = static_cast<u64>(bcap) * sizeof(Mat4),
+             .usage = rhi::BufferUsage::Storage, .domain = rhi::MemoryDomain::Upload,
+             .debugName = "mesh_bones"});
         m_uniformBindGroups[i] = m_device.createBindGroup(
             {.uniformBuffer = m_uniformBuffers[i], .uniformSize = sizeof(FrameUBO),
              .storageBuffer = m_instanceBuffers[i],
-             .storageSize   = static_cast<u64>(cap) * sizeof(GpuInstance)});
+             .storageSize   = static_cast<u64>(icap) * sizeof(GpuInstance),
+             .boneBuffer    = m_boneBuffers[i],
+             .boneSize      = static_cast<u64>(bcap) * sizeof(Mat4)});
     }
-    m_instanceCapacity = cap;
+    m_instanceCapacity = icap;
+    m_boneCapacity     = bcap;
 }
 
 MeshRenderer::~MeshRenderer() {
@@ -735,6 +754,7 @@ MeshRenderer::~MeshRenderer() {
         m_device.destroyBindGroup(m_uniformBindGroups[i]);
         m_device.destroyBuffer(m_uniformBuffers[i]);
         if (m_instanceBuffers[i].valid()) m_device.destroyBuffer(m_instanceBuffers[i]);
+        if (m_boneBuffers[i].valid())     m_device.destroyBuffer(m_boneBuffers[i]);
         m_device.destroyBindGroup(m_skyBindGroups[i]);
         m_device.destroyBuffer(m_skyBuffers[i]);
     }
@@ -840,6 +860,8 @@ rhi::PipelineHandle MeshRenderer::pipelineFor(PipelineKey key) {
         {.location = 3, .format = rhi::VertexFormat::Float4, .offset = offsetof(MeshVertex, tangent)},
         {.location = 4, .format = rhi::VertexFormat::Float4, .offset = offsetof(MeshVertex, color)},
         {.location = 5, .format = rhi::VertexFormat::Float2, .offset = offsetof(MeshVertex, uv1)},
+        {.location = 6, .format = rhi::VertexFormat::UInt4x8, .offset = offsetof(MeshVertex, joints)},
+        {.location = 7, .format = rhi::VertexFormat::Float4,  .offset = offsetof(MeshVertex, weights)},
     };
     pd.topology         = rhi::PrimitiveTopology::TriangleList;
     pd.cull             = key.doubleSided ? rhi::CullMode::None : rhi::CullMode::Back;
@@ -864,13 +886,16 @@ rhi::PipelineHandle MeshRenderer::pipelineFor(PipelineKey key) {
 }
 
 MeshHandle MeshRenderer::createMesh(const MeshVertex* vertices, usize vertexCount,
-                                    const u32* indices, usize indexCount) {
+                                    const u32* indices, usize indexCount, bool dynamic) {
     GpuMesh gm;
-    gm.indexCount = static_cast<u32>(indexCount);
-    gm.alive      = true;
+    gm.indexCount  = static_cast<u32>(indexCount);
+    gm.vertexCount = static_cast<u32>(vertexCount);
+    gm.dynamic     = dynamic;
+    gm.alive       = true;
     gm.vbo = m_device.createBuffer(
         {.size = vertexCount * sizeof(MeshVertex), .usage = rhi::BufferUsage::Vertex,
-         .domain = rhi::MemoryDomain::Device, .debugName = "mesh_vertices"},
+         .domain = dynamic ? rhi::MemoryDomain::Upload : rhi::MemoryDomain::Device,
+         .debugName = "mesh_vertices"},
         vertices);
     gm.ibo = m_device.createBuffer(
         {.size = indexCount * sizeof(u32), .usage = rhi::BufferUsage::Index,
@@ -884,6 +909,16 @@ MeshHandle MeshRenderer::createMesh(const MeshVertex* vertices, usize vertexCoun
     const u32 index = static_cast<u32>(m_meshes.size());
     m_meshes.push_back(std::move(gm));
     return {.index = index, .generation = 0};
+}
+
+void MeshRenderer::updateMesh(MeshHandle h, const MeshVertex* vertices, usize vertexCount) {
+    if (!h.valid() || h.index >= m_meshes.size() || vertices == nullptr) return;
+    GpuMesh& gm = m_meshes[h.index];
+    VORTEX_ASSERT(gm.dynamic, "updateMesh() on a mesh that was not created dynamic");
+    if (!gm.alive || !gm.dynamic) return;
+
+    const usize count = std::min(vertexCount, static_cast<usize>(gm.vertexCount));
+    m_device.updateBuffer(gm.vbo, vertices, count * sizeof(MeshVertex));
 }
 
 void MeshRenderer::destroyMesh(MeshHandle h) {
@@ -1128,7 +1163,15 @@ void MeshRenderer::renderShadow(rhi::ICommandList& cmd) {
     if (m_instances.empty()) return;
 
     VORTEX_PROFILE_ZONE("mesh.shadow");
+
+    // The shadow pass is usually recorded first, and it reads the instance and bone buffers
+    // that classify() uploads. Relying on a later end() to have uploaded them by then works
+    // only by accident of ordering — an app that renders shadows and nothing else would get
+    // last frame's pose. So do it here, and let the flag make the second call free.
+    classify();
+
     cmd.setPipeline(m_shadowPipeline);
+    cmd.setBindGroup(1, m_uniformBindGroups[m_frame]);   // set 1: frame + instances + bones
 
     // One cascade fills the map; several tile it 2x2. Each gets its own viewport, so the
     // same geometry is recorded once per cascade against a different light matrix.
@@ -1143,17 +1186,30 @@ void MeshRenderer::renderShadow(rhi::ICommandList& cmd) {
         cmd.setScissor(static_cast<u32>(tx), static_cast<u32>(ty),
                        static_cast<u32>(tile), static_cast<u32>(tile));
 
-        for (const MeshInstance& inst : m_instances) {
+        for (u32 i = 0; i < m_instances.size(); ++i) {
+            const MeshInstance& inst = m_instances[i];
             if (!inst.castsShadow) continue;
             if (!inst.mesh.valid() || inst.mesh.index >= m_meshes.size()) continue;
             const GpuMesh& gm = m_meshes[inst.mesh.index];
             if (!gm.alive || gm.indexCount == 0) continue;
 
-            const Mat4 lightMvp = m_frameData.cascadeViewProj[c] * inst.model;
-            cmd.pushConstants(&lightMvp, sizeof(Mat4));
+            const MaterialHandle mh = inst.material.valid() ? inst.material : m_defaultMaterial;
+            if (mh.index >= m_materials.size() || !m_materials[mh.index].alive) continue;
+            const GpuMaterial& mat = m_materials[mh.index];
+
+            // A blended surface has no business writing an opaque depth. A pane of glass that
+            // casts a solid black shadow is worse than one that casts none, and a depth map
+            // has no way to record "let 40% of the light through".
+            if (mat.desc.blend != rhi::BlendMode::Opaque) continue;
+
+            const ShadowPush pc{m_frameData.cascadeViewProj[c] * inst.model,
+                                {mat.desc.alphaCutoff, mat.desc.uvScale, 0.0f, 0.0f}};
+
+            cmd.setBindGroup(0, mat.bindGroup);   // set 0: the albedo, for the alpha test
+            cmd.pushConstants(&pc, sizeof(ShadowPush));
             cmd.setVertexBuffer(0, gm.vbo);
             cmd.setIndexBuffer(gm.ibo, rhi::IndexType::U32);
-            cmd.drawIndexed(gm.indexCount);
+            cmd.drawIndexed(gm.indexCount, 1, 0, 0, i);   // firstInstance = the pose to skin by
         }
     }
 }
@@ -1305,7 +1361,9 @@ void MeshRenderer::classify() {
     // Per-instance data goes up once, before anything is recorded. An instance that did
     // not say where it was last frame is treated as stationary, so its only motion comes
     // from the camera — which is what a reprojection would have given anyway.
-    ensureInstanceCapacity(static_cast<u32>(m_instances.size()));
+    // Pack every skinned instance's bones into one buffer, and hand each instance the offset
+    // where its own begin. One buffer and one upload, however many characters there are.
+    m_boneData.clear();
     m_instanceData.resize(m_instances.size());
     for (usize i = 0; i < m_instances.size(); ++i) {
         const MeshInstance& inst = m_instances[i];
@@ -1316,11 +1374,25 @@ void MeshRenderer::classify() {
             const MaterialDesc& d = m_materials[inst.material.index].desc;
             if (d.lightmap.valid()) lightmap = d.lightmapIntensity;
         }
-        m_instanceData[i].params = {lightmap, 0.0f, 0.0f, 0.0f};
+
+        f32 boneOffset = 0.0f, boneCount = 0.0f;
+        if (inst.bones != nullptr && inst.boneCount > 0) {
+            boneOffset = static_cast<f32>(m_boneData.size());
+            boneCount  = static_cast<f32>(inst.boneCount);
+            m_boneData.insert(m_boneData.end(), inst.bones, inst.bones + inst.boneCount);
+        }
+        m_instanceData[i].params = {lightmap, boneOffset, boneCount, 0.0f};
     }
+
+    ensureInstanceCapacity(static_cast<u32>(m_instances.size()),
+                           static_cast<u32>(m_boneData.size()));
+
     if (!m_instanceData.empty())
         m_device.updateBuffer(m_instanceBuffers[m_frame], m_instanceData.data(),
                               m_instanceData.size() * sizeof(GpuInstance));
+    if (!m_boneData.empty())
+        m_device.updateBuffer(m_boneBuffers[m_frame], m_boneData.data(),
+                              m_boneData.size() * sizeof(Mat4));
 }
 
 void MeshRenderer::drawList(rhi::ICommandList& cmd, const std::vector<u32>& list,

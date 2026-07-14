@@ -50,7 +50,12 @@ enum class PrimitiveTopology { TriangleList, TriangleStrip, LineList, PointList 
 
 enum class IndexType { U16, U32 };
 
-enum class VertexFormat { Float1, Float2, Float3, Float4, UNorm4x8, UInt1 };
+enum class VertexFormat {
+    Float1, Float2, Float3, Float4, UNorm4x8, UInt1,
+    // Four 8-bit integers, delivered to the shader as a uvec4 WITHOUT being normalised.
+    // Skinning joint indices: they are indices, and dividing them by 255 would be absurd.
+    UInt4x8,
+};
 
 enum class CullMode { None, Front, Back };
 

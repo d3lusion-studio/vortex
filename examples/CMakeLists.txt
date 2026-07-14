@@ -146,3 +146,6 @@ add_dependencies(hotreload game)
 
 add_executable(bloom2d bloom2d/main.cpp)
 target_link_libraries(bloom2d PRIVATE Vortex::vortex)
+
+add_executable(skinned skinned/main.cpp)
+target_link_libraries(skinned PRIVATE Vortex::vortex)

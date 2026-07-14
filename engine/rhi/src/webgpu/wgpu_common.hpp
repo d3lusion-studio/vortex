@@ -105,6 +105,7 @@ inline constexpr u32 kMaxPushConstantSize = 128;   // matches the Vulkan backend
         case VertexFormat::Float4:   return WGPUVertexFormat_Float32x4;
         case VertexFormat::UNorm4x8: return WGPUVertexFormat_Unorm8x4;
         case VertexFormat::UInt1:    return WGPUVertexFormat_Uint32;
+        case VertexFormat::UInt4x8:  return WGPUVertexFormat_Uint8x4;
     }
     return WGPUVertexFormat_Float32;
 }

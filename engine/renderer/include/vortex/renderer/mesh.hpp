@@ -32,6 +32,12 @@ struct MeshVertex {
     // The default is a valid frame, so a mesh built without tangents still shades.
     Vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
     Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+
+    // Skinning: up to four joints move this vertex, by these weights. Weights of all zero
+    // mean "not skinned" — the vertex shader then leaves the vertex where it is, which is
+    // what every non-skinned mesh in the scene relies on.
+    u8   joints[4]{0, 0, 0, 0};
+    Vec4 weights{0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 // ---------------------------------------------------------------------------
@@ -263,6 +269,15 @@ struct MeshInstance {
 
     bool castsShadow    = true;
     bool receivesShadow = true;
+
+    // Skinning matrices for this instance, one per joint of its skeleton — the pose, already
+    // combined with the inverse bind (anim::Skeleton::computeSkinningMatrices). Null means the
+    // mesh is drawn as authored.
+    //
+    // A borrowed pointer, valid until the next begin(): the renderer copies these into a GPU
+    // buffer during submit and never looks at them again.
+    const Mat4* bones     = nullptr;
+    u32         boneCount = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -319,11 +334,18 @@ public:
     MeshRenderer& operator=(const MeshRenderer&) = delete;
 
     [[nodiscard]] MeshHandle createMesh(const MeshVertex* vertices, usize vertexCount,
-                                        const u32* indices, usize indexCount);
-    [[nodiscard]] MeshHandle createMesh(const MeshData& data) {
+                                        const u32* indices, usize indexCount,
+                                        bool dynamic = false);
+    [[nodiscard]] MeshHandle createMesh(const MeshData& data, bool dynamic = false) {
         return createMesh(data.vertices.data(), data.vertices.size(),
-                          data.indices.data(), data.indices.size());
+                          data.indices.data(), data.indices.size(), dynamic);
     }
+
+    // Rewrite a dynamic mesh's vertices. The buffer is host-visible, so this is a memcpy —
+    // which is what makes CPU skinning viable at all. Creating the mesh without `dynamic`
+    // puts it in device memory, where this would have to stage a copy every frame instead.
+    void updateMesh(MeshHandle, const MeshVertex* vertices, usize vertexCount);
+
     void destroyMesh(MeshHandle);
 
     [[nodiscard]] MaterialHandle createMaterial(const MaterialDesc&);
@@ -483,8 +505,10 @@ private:
     struct GpuMesh {
         rhi::BufferHandle vbo;
         rhi::BufferHandle ibo;
-        u32               indexCount = 0;
-        bool              alive      = false;
+        u32               indexCount  = 0;
+        u32               vertexCount = 0;
+        bool              dynamic     = false;   // host-visible: updateMesh() may rewrite it
+        bool              alive       = false;
         MeshData          cpu;   // kept for ray casting
     };
 
@@ -526,8 +550,11 @@ private:
     // which is 64 bytes the 128-byte push block has no room for.
     struct GpuInstance {
         Mat4 prevModel;
-        // x = lightmap intensity (0 = none). The push block is at its 128-byte ceiling,
-        // and this is the buffer that exists precisely for what will not fit there.
+        // x = lightmap intensity (0 = none)
+        // y = this instance's first bone in the bone buffer
+        // z = how many bones it has (0 = not skinned)
+        // The push block is at its 128-byte ceiling, and this is the buffer that exists
+        // precisely for what will not fit there.
         Vec4 params;
     };
 
@@ -551,6 +578,13 @@ private:
         Vec4 emissive;   // rgb, strength
         Vec4 params;     // alphaCutoff, uvScale, unlit, receivesShadow
         Vec4 extra;      // parallaxScale, parallaxLayers, transmission, ior
+    };
+
+    // 80 bytes. The shadow pass carries the light matrix and just enough of the material to
+    // run the same alpha test the lit pass runs.
+    struct ShadowPush {
+        Mat4 lightMvp;
+        Vec4 params;   // alphaCutoff, uvScale, 0, 0
     };
 
     struct DeferredPush {
@@ -627,7 +661,14 @@ private:
     rhi::BufferHandle    m_instanceBuffers[rhi::kMaxFramesInFlight];
     u32                  m_instanceCapacity = 0;
     std::vector<GpuInstance> m_instanceData;
-    void ensureInstanceCapacity(u32 count);
+
+    // Every skinned instance's bones, end to end. One buffer for the whole frame: a hundred
+    // characters is a hundred offsets into it, not a hundred buffers.
+    rhi::BufferHandle    m_boneBuffers[rhi::kMaxFramesInFlight];
+    u32                  m_boneCapacity = 0;
+    std::vector<Mat4>    m_boneData;
+
+    void ensureInstanceCapacity(u32 instances, u32 bones);
     rhi::BufferHandle    m_skyBuffers[rhi::kMaxFramesInFlight];
     rhi::BindGroupHandle m_skyBindGroups[rhi::kMaxFramesInFlight];
 
