@@ -143,11 +143,19 @@ void extractMeshes(Registry& registry, std::vector<renderer::MeshInstance>& out)
             const Mat4 model = Mat4::translation(t.position.x, t.position.y, t.position.z) *
                                t.rotation.toMat4() *
                                Mat4::scaling(t.scale.x, t.scale.y, t.scale.z);
-            out.push_back({.mesh = mesh.mesh, .model = model, .color = mesh.color,
+            out.push_back({.mesh = mesh.mesh, .model = model,
+                           .prevModel = mesh.hasPrevModel ? mesh.prevModel : model,
+                           .hasPrevModel = true,
+                           .color = mesh.color,
                            .metallic = mesh.metallic, .roughness = mesh.roughness,
                            .material = mesh.material,
                            .castsShadow = mesh.castsShadow,
                            .receivesShadow = mesh.receivesShadow});
+
+            // Remember it for next frame. This is the one place extraction writes back,
+            // and it writes nothing the game logic can see.
+            mesh.prevModel    = model;
+            mesh.hasPrevModel = true;
         });
 }
 

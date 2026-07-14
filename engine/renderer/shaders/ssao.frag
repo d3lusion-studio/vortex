@@ -23,13 +23,17 @@ struct Light {
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4  viewProj;
-    mat4  lightViewProj;
+    mat4  lightViewProj;    // cascade 0; the vertex stage uses it for the forward path
     vec4  cameraPos;
-    vec4  ambient;
-    vec4  fogColor;
-    vec4  fogParams;
-    vec4  shadowParams;
-    vec4  misc;
+    vec4  ambient;          // rgb = IBL tint, w = IBL intensity
+    vec4  fogColor;         // rgb, w = density
+    vec4  fogParams;        // x = start, y = end, z = mode, w = height falloff
+    vec4  shadowParams;     // x = depth bias, y = normal bias, z = PCF radius, w = enabled
+    vec4  misc;             // x = light count, y = cascade count
+    vec4  contactParams;    // x = enabled, y = distance, z = steps, w = thickness
+    vec4  cascadeSplits;    // view distance at which each cascade ends
+    vec4  cascadeTexelWorld;  // world size of one shadow texel, per cascade
+    mat4  cascadeViewProj[4];
     Light lights[16];
 } uFrame;
 

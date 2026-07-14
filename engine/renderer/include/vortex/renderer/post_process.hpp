@@ -57,20 +57,17 @@ public:
         addPasses(graph, sceneHdr, output, width, height, Settings{});
     }
 
-    // Per-pixel motion blur, driven by depth reprojection: `reprojection` maps this
-    // frame's clip space to last frame's (MeshRenderer::reprojection()), and the depth
-    // buffer says where each pixel is, so the two together say how far it moved.
+    // Per-pixel motion blur from the G-buffer's velocity target. Camera motion AND
+    // object motion, because the velocity was computed per vertex against that instance's
+    // own previous transform.
     //
     // Returns the blurred colour target — feed THAT to addPasses() as the scene, since
     // a pass cannot read and write the same texture. Add it before the post chain.
-    //
-    // Camera motion only. An object moving while the camera holds still does not blur:
-    // its own matrix is not part of the reprojection, which would need per-object
-    // velocity written into the G-buffer.
+    // Deferred only: without a G-buffer there is no velocity to read.
     [[nodiscard]] RenderGraph::ResourceId addMotionBlur(
         RenderGraph& graph, RenderGraph::ResourceId sceneHdr,
-        RenderGraph::ResourceId depth, u32 width, u32 height,
-        const Mat4& reprojection, f32 strength = 1.0f, u32 samples = 8);
+        RenderGraph::ResourceId velocity, u32 width, u32 height,
+        f32 strength = 1.0f, u32 samples = 8);
 
 private:
     rhi::IGraphicsDevice& m_device;
@@ -89,7 +86,7 @@ private:
     rhi::TextureHandle    m_white;
     rhi::SamplerHandle    m_sampler;
     struct MotionCache {
-        rhi::TextureHandle   scene, depth;
+        rhi::TextureHandle   scene, velocity;
         rhi::BindGroupHandle group;
     };
     std::vector<MotionCache> m_motionCache;

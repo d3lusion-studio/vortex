@@ -30,7 +30,6 @@ std::vector<std::byte> toBytes(const unsigned char* data, unsigned long size) {
 struct PostPush { f32 v[8]; };
 
 struct MotionPush {
-    Mat4 reprojection;
     Vec4 params;   // strength, samples, max velocity, unused
 };
 
@@ -109,25 +108,25 @@ PostProcess::~PostProcess() {
 }
 
 RenderGraph::ResourceId PostProcess::addMotionBlur(
-    RenderGraph& graph, RenderGraph::ResourceId sceneHdr, RenderGraph::ResourceId depth,
-    u32 width, u32 height, const Mat4& reprojection, f32 strength, u32 samples) {
+    RenderGraph& graph, RenderGraph::ResourceId sceneHdr, RenderGraph::ResourceId velocity,
+    u32 width, u32 height, f32 strength, u32 samples) {
 
     const rhi::TextureHandle sceneTex = graph.texture(sceneHdr);
-    const rhi::TextureHandle depthTex = graph.texture(depth);
-    if (!sceneTex.valid() || !depthTex.valid() || samples < 2) return sceneHdr;
+    const rhi::TextureHandle velTex   = graph.texture(velocity);
+    if (!sceneTex.valid() || !velTex.valid() || samples < 2) return sceneHdr;
 
     rhi::BindGroupHandle input{};
     for (const MotionCache& mc : m_motionCache)
-        if (mc.scene == sceneTex && mc.depth == depthTex) { input = mc.group; break; }
+        if (mc.scene == sceneTex && mc.velocity == velTex) { input = mc.group; break; }
     if (!input.valid()) {
         input = m_device.createBindGroup({.isPbrMaterialSet  = true,
                                           .albedo            = sceneTex,
-                                          .normalMap         = depthTex,
+                                          .normalMap         = velTex,
                                           .metallicRoughness = m_white,
                                           .emissive          = m_white,
                                           .occlusion         = m_white,
                                           .materialSampler   = m_sampler});
-        m_motionCache.push_back({sceneTex, depthTex, input});
+        m_motionCache.push_back({sceneTex, velTex, input});
     }
 
     const auto blurred = graph.colorTarget("motion_blur", width, height, m_hdrFormat);
@@ -136,12 +135,11 @@ RenderGraph::ResourceId PostProcess::addMotionBlur(
     graph.addPass("motion_blur",
         [&](RenderGraph::PassBuilder& b) {
             b.sample(sceneHdr);
-            b.sample(depth);
+            b.sample(velocity);
             b.writeColor(blurred, black);
         },
-        [this, input, width, height, reprojection, strength, samples](rhi::ICommandList& cmd) {
-            const MotionPush push{reprojection,
-                                  {strength, static_cast<f32>(samples), 0.1f, 0.0f}};
+        [this, input, width, height, strength, samples](rhi::ICommandList& cmd) {
+            const MotionPush push{{strength, static_cast<f32>(samples), 0.1f, 0.0f}};
             cmd.setViewport({.x = 0.0f, .y = 0.0f,
                              .width = static_cast<f32>(width),
                              .height = static_cast<f32>(height)});

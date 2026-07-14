@@ -58,18 +58,18 @@ struct Light {
 // The sun. Also drives the shadow map: the scene is rendered depth-only from an
 // orthographic camera aimed along `direction`. It is always light 0, and it is the
 // only light that casts a shadow.
+//
+// The shadow frustum is not configured here — it is fitted to the camera's own view
+// every frame (see ShadowSettings), so it follows the player around without anyone
+// having to nominate a region of the world in advance.
 struct DirectionalLight {
     Vec3 direction{-0.4f, -1.0f, -0.5f};   // direction the light travels (world)
     Vec3 color{1.0f, 1.0f, 1.0f};
     f32  intensity = 1.0f;
     Vec3 ambient{1.0f, 1.0f, 1.0f};        // IBL intensity/tint (ambient from cubemaps)
-
-    // Shadow frustum: an ortho box of half-extent `shadowExtent` centred on
-    // `shadowTarget`, with the light placed `shadowDistance` back along -dir.
-    Vec3 shadowTarget{0.0f, 0.0f, 0.0f};
-    f32  shadowExtent   = 16.0f;
-    f32  shadowDistance = 40.0f;
 };
+
+inline constexpr u32 kMaxCascades = 4;
 
 // Depth-map artefacts are a bias trade-off: too little and a surface shadows itself
 // in stripes (acne), too much and the shadow floats away from its caster (peter-panning).
@@ -78,6 +78,23 @@ struct ShadowSettings {
     f32  depthBias  = 0.0015f;   // scaled by the surface's slope to the light
     f32  normalBias = 0.0004f;   // constant floor, applied even head-on
     i32  pcfRadius  = 1;         // kernel half-width in texels; 1 => 3x3, 0 => hard edges
+
+    // Cascaded shadow maps. One shadow map stretched over the whole view has to choose
+    // between covering the distance and resolving anything up close; cascades cut the
+    // view into `cascadeCount` depth slices and give each its own map, so the slice at
+    // your feet gets the same texels as the one at the horizon. 1 = the single-map path.
+    //
+    // All cascades share one depth texture, tiled 2x2 — the RHI has no texture arrays,
+    // and an atlas needs none.
+    u32 cascadeCount = 1;
+    f32 maxDistance  = 60.0f;   // how far from the camera shadows are drawn at all
+    // Where the splits fall between an even spread (0) and a logarithmic one (1).
+    // Logarithmic matches how perspective compresses distance; a little of it goes far.
+    f32 splitLambda  = 0.75f;
+
+    // Side of the (square) shadow texture. Must match the target handed to setShadowMap:
+    // the renderer needs it to place the cascades in the atlas and to snap them to texels.
+    u32 resolution = 2048;
 };
 
 struct Fog {
@@ -103,6 +120,49 @@ struct Ssao {
     f32  power     = 1.5f;   // > 1 deepens the contacts and lifts the open areas
 };
 
+// A shadow map's texel is metres wide; the contact between an object and the floor it
+// rests on is millimetres. Marching the depth buffer toward the light for a short way
+// recovers exactly that detail, and only that — this is a supplement to the shadow map,
+// not a replacement. Deferred only: it needs the depth buffer as a texture.
+struct ContactShadows {
+    bool enabled  = false;
+    f32  distance = 0.25f;   // world units to march (keep it short — it is a detail pass)
+    i32  steps    = 12;
+    f32  thickness = 0.5f;   // how far behind a surface the ray still counts as blocked
+};
+
+// Light made visible in the air itself: march the view ray, ask the shadow map whether
+// each step is lit, and accumulate what scatters toward the camera. This is what draws
+// god rays through a gap. Deferred only.
+struct VolumetricFog {
+    bool enabled   = false;
+    f32  density   = 0.06f;   // how much light scatters per unit of air
+    i32  steps     = 48;
+    f32  maxDistance = 40.0f;
+    // Mie anisotropy: 0 scatters evenly, values toward 1 throw the light forward, which
+    // is what makes a beam blaze when you look into it and stay faint when you don't.
+    f32  anisotropy = 0.6f;
+    Vec3 color{1.0f, 0.98f, 0.92f};
+};
+
+// A decal is a box of space, not a piece of geometry. Whatever surface the G-buffer holds
+// inside the box gets the texture projected onto it — so a scorch mark lands on the floor,
+// the wall and the step between them at once, with nothing to UV-unwrap and no z-fighting
+// decal quad hovering a millimetre above the ground.
+//
+// The box is a unit cube, transformed by `model`; the decal projects down the box's local
+// -Y, and its texture is mapped across the box's local XZ. Deferred only: it is stamped
+// into the G-buffer's albedo before any lighting happens, so it lights like the surface
+// it landed on.
+struct Decal {
+    Mat4               model = Mat4::identity();
+    rhi::TextureHandle texture;
+    f32                opacity = 1.0f;
+    // Surfaces more side-on than this to the projection axis are skipped, or the texture
+    // would stretch down them in the streak every decal system is known for.
+    f32                angleFade = 0.3f;   // cosine; 0 accepts everything
+};
+
 // Everything about the world (as opposed to the surfaces in it) for one frame.
 struct SceneLighting {
     DirectionalLight   sun;
@@ -110,6 +170,8 @@ struct SceneLighting {
     ShadowSettings     shadow;
     Fog                fog;
     Ssao               ssao;
+    ContactShadows     contactShadows;
+    VolumetricFog      volumetric;
     f32                skyboxIntensity = 1.0f;
 };
 
@@ -143,6 +205,24 @@ struct MaterialDesc {
     f32  alphaCutoff = 0.0f;        // > 0 discards fragments below it (masked cutout)
     f32  uvScale     = 1.0f;        // tiles every map at once
 
+    // Parallax occlusion mapping. A normal map fakes the *lighting* of relief but leaves
+    // the surface flat, so it flattens out the moment you look along it. This walks the
+    // view ray through a height field and shifts the UV to where the ray actually meets
+    // the surface, so bricks occlude their own mortar and the relief holds at a glancing
+    // angle. The height field is the **alpha channel of the normal map** (1 = the top of
+    // the surface, 0 = the bottom of the grooves).
+    //
+    // 0 disables it — and disabled is the default, because a material whose normal map
+    // has no meaningful alpha would otherwise get its UVs shifted by nonsense.
+    f32  parallaxScale  = 0.0f;   // depth of the relief, in UV units. 0.02-0.08 is sane.
+    i32  parallaxLayers = 24;     // ray-march steps. More = fewer stair-steps at grazing angles.
+
+    // Transmission: how much light passes *through* the surface rather than bouncing off
+    // it — glass, water, gems. The lit scene behind the surface is sampled and refracted
+    // through the normal. Needs a blended material and MeshRenderer::setSceneColor().
+    f32  transmission = 0.0f;   // 0 = opaque surface, 1 = fully see-through
+    f32  ior          = 1.5f;   // index of refraction; 1.5 is window glass, 1.33 water
+
     bool           unlit       = false;   // emit baseColor directly; for lines/gizmos
     rhi::BlendMode blend       = rhi::BlendMode::Opaque;
     bool           doubleSided = false;
@@ -151,6 +231,12 @@ struct MaterialDesc {
 struct MeshInstance {
     MeshHandle mesh;
     Mat4       model = Mat4::identity();
+
+    // Where this instance was last frame. Motion blur needs it to know that an object
+    // moved on its own rather than under the camera. Leave `hasPrevModel` false and the
+    // instance is treated as stationary — its blur then comes from the camera alone.
+    Mat4       prevModel    = Mat4::identity();
+    bool       hasPrevModel = false;
 
     // Tints the material's base colour (and is the base colour outright when no
     // material is set). Alpha drives transparency for a blended material.
@@ -242,7 +328,9 @@ public:
     // Leave it unset to render unshadowed.
     void setShadowMap(rhi::TextureHandle);
 
-    // Depth-only pass from the light's point of view; fills the shadow map.
+    // Depth-only pass from the light's point of view; fills the shadow map. With more
+    // than one cascade the map is an atlas, and this renders each cascade into its own
+    // quadrant — so it sets the viewport itself, from ShadowSettings::resolution.
     void renderShadow(rhi::ICommandList& cmd);
 
     // The environment cubemap as the background, at the far plane. Record it inside
@@ -251,6 +339,19 @@ public:
 
     // Main lit pass: opaque instances first, then blended ones back-to-front.
     void end(rhi::ICommandList& cmd);
+
+    // The opaque half of the forward pass, on its own. Split the two when a transmissive
+    // material is in play: the blended surfaces need the opaque scene as a texture, and
+    // it cannot be copied out from inside the pass that is still writing it.
+    void endOpaque(rhi::ICommandList& cmd);
+
+    // Copy the lit scene so transmissive surfaces can refract it. `source` is the
+    // sampling bind group for the target holding the opaque scene.
+    void renderSceneCopy(rhi::ICommandList& cmd, rhi::BindGroupHandle source);
+
+    // Hand over that copy. Call before the transparent pass; without it, a transmissive
+    // material sees black behind itself.
+    void setSceneColor(rhi::TextureHandle);
 
     // --- Deferred path -----------------------------------------------------
     //
@@ -264,9 +365,19 @@ public:
     static constexpr rhi::Format kGBufferAlbedoFormat   = rhi::Format::R8G8B8A8_UNORM;
     static constexpr rhi::Format kGBufferNormalFormat   = rhi::Format::R16G16B16A16_SFLOAT;
     static constexpr rhi::Format kGBufferEmissiveFormat = rhi::Format::R16G16B16A16_SFLOAT;
+    // Screen-space motion since the last frame. Signed, so it needs a float format.
+    static constexpr rhi::Format kGBufferVelocityFormat = rhi::Format::R16G16B16A16_SFLOAT;
 
     // Fill the G-buffer: opaque instances only, no lighting.
     void renderGBuffer(rhi::ICommandList& cmd);
+
+    // Queue a decal for this frame. Cleared by begin(), like the mesh instances.
+    void submitDecal(const Decal&);
+
+    // Stamp the queued decals into the G-buffer's albedo. Record this AFTER the G-buffer
+    // pass and BEFORE the lighting pass, into a pass that writes the albedo target (with
+    // LoadOp::Load) and samples the depth target.
+    void renderDecals(rhi::ICommandList& cmd);
 
     // Hand over the filled G-buffer (textures from the render graph). Call between
     // the G-buffer pass and the lighting pass.
@@ -294,10 +405,10 @@ public:
     // A fullscreen pass — needs no depth attachment.
     void renderDeferredLighting(rhi::ICommandList& cmd);
 
-    // This frame's clip space -> last frame's clip space. Feed it to
-    // PostProcess::addMotionBlur(), which uses it to find where each pixel came from.
-    // Valid after begin(); on the first frame it is the identity (no motion).
-    [[nodiscard]] Mat4 reprojection() const;
+    // Light scattering in the air between the camera and each surface, marched against
+    // the shadow map. Additive over the lit scene; record it after the lighting pass.
+    // Needs SceneLighting::volumetric enabled and the G-buffer handed over.
+    void renderVolumetric(rhi::ICommandList& cmd);
 
     // Forward pass for the blended instances the G-buffer had to skip. Record it
     // into a pass that loads the lit colour and the G-buffer's depth.
@@ -339,14 +450,27 @@ private:
     // Mirrors the `Frame` block in mesh.vert/mesh.frag (std140).
     struct FrameUBO {
         Mat4     viewProj;
-        Mat4     lightViewProj;
+        Mat4     lightViewProj;      // cascade 0, kept for the forward path's vertex stage
         Vec4     cameraPos;
         Vec4     ambient;
         Vec4     fogColor;
         Vec4     fogParams;
-        Vec4     shadowParams;
-        Vec4     misc;
+        Vec4     shadowParams;       // depthBias, normalBias, pcfRadius, enabled
+        Vec4     misc;               // lightCount, cascadeCount, 0, 0
+        Vec4     contactParams;      // enabled, distance, steps, thickness
+        Vec4     cascadeSplits;      // view-space distance at which each cascade ends
+        Vec4     cascadeTexelWorld;  // world units one shadow texel spans, per cascade
+        Mat4     cascadeViewProj[kMaxCascades];
         GpuLight lights[kMaxLights];
+        Mat4     prevViewProj;   // last frame's, for per-object velocity
+        Mat4     invViewProj;    // clip -> world; decals rebuild a surface's position with it
+    };
+
+    // Per-instance data the vertex stage looks up by gl_InstanceIndex. Only what push
+    // constants cannot hold lives here — the model matrix this instance had LAST frame,
+    // which is 64 bytes the 128-byte push block has no room for.
+    struct GpuInstance {
+        Mat4 prevModel;
     };
 
     struct SkyUBO {
@@ -355,13 +479,20 @@ private:
         Vec4 params;
     };
 
-    // 128 bytes — the guaranteed Vulkan push-constant budget, exactly.
+    // 128 bytes — the guaranteed Vulkan push-constant budget, exactly, and it was full.
+    //
+    // The model matrix is stored as its first three ROWS, not as a Mat4: the fourth row
+    // of an affine transform is always (0,0,0,1), so storing it costs 16 bytes to say
+    // nothing. Dropping it is what paid for `extra`.
     struct Push {
-        Mat4 model;
+        Vec4 modelRow0;
+        Vec4 modelRow1;
+        Vec4 modelRow2;
         Vec4 color;
         Vec4 material;   // metallic, roughness, normalScale, occlusionStrength
         Vec4 emissive;   // rgb, strength
         Vec4 params;     // alphaCutoff, uvScale, unlit, receivesShadow
+        Vec4 extra;      // parallaxScale, parallaxLayers, transmission, ior
     };
 
     struct DeferredPush {
@@ -378,6 +509,12 @@ private:
         Vec4 params;     // texel size xy
     };
 
+    struct VolumePush {
+        Mat4 invViewProj;
+        Vec4 params;     // density, steps, maxDistance, anisotropy
+        Vec4 color;
+    };
+
     // One pipeline per (blend mode, sidedness) pair, built on first use.
     struct PipelineKey {
         rhi::BlendMode blend       = rhi::BlendMode::Opaque;
@@ -387,7 +524,8 @@ private:
 
     [[nodiscard]] rhi::TextureHandle defaultTexture(Vec4 rgba);
     void rebuildSceneBindGroup();
-    void recordInstance(rhi::ICommandList& cmd, const MeshInstance&);
+    void recordInstance(rhi::ICommandList& cmd, const MeshInstance&, u32 instanceIndex);
+    void buildCascades(const Camera&, const DirectionalLight&, const ShadowSettings&);
     void classify();   // split the submitted instances into opaque and blended
     void drawList(rhi::ICommandList& cmd, const std::vector<u32>& list,
                   rhi::PipelineHandle forced);
@@ -404,6 +542,10 @@ private:
     rhi::PipelineHandle         m_deferredPipeline;
     rhi::PipelineHandle         m_ssaoPipeline;
     rhi::PipelineHandle         m_ssaoBlurPipeline;
+    rhi::PipelineHandle         m_volumetricPipeline;
+    rhi::PipelineHandle         m_blitPipeline;
+    rhi::PipelineHandle         m_decalPipeline;
+    MeshHandle                  m_unitCube;   // the volume every decal is drawn as
 
     // The filled G-buffer, bound through the PBR material set layout. Cached the
     // same way the scene set is: one bind group per frame-in-flight, then stable.
@@ -423,6 +565,11 @@ private:
 
     rhi::BufferHandle    m_uniformBuffers[rhi::kMaxFramesInFlight];
     rhi::BindGroupHandle m_uniformBindGroups[rhi::kMaxFramesInFlight];
+    // Per-instance data, one buffer per frame in flight, grown as the scene needs.
+    rhi::BufferHandle    m_instanceBuffers[rhi::kMaxFramesInFlight];
+    u32                  m_instanceCapacity = 0;
+    std::vector<GpuInstance> m_instanceData;
+    void ensureInstanceCapacity(u32 count);
     rhi::BufferHandle    m_skyBuffers[rhi::kMaxFramesInFlight];
     rhi::BindGroupHandle m_skyBindGroups[rhi::kMaxFramesInFlight];
 
@@ -436,9 +583,14 @@ private:
     // which in practice is once per frame-in-flight, then never again.
     rhi::SamplerHandle   m_shadowSampler;
     rhi::TextureHandle   m_shadowMap;          // the current frame's, or the dummy
+    rhi::TextureHandle   m_sceneColor;         // the lit scene copy, or the black dummy
+    rhi::TextureHandle   m_sceneDepth;         // the G-buffer's depth, for decals
     rhi::TextureHandle   m_dummyShadow;        // 1x1 white => "nothing is shadowed"
     rhi::BindGroupHandle m_sceneBindGroup;
-    struct SceneCache { rhi::TextureHandle tex; rhi::BindGroupHandle group; };
+    struct SceneCache {
+        rhi::TextureHandle   shadow, sceneColor, sceneDepth;
+        rhi::BindGroupHandle group;
+    };
     std::vector<SceneCache> m_sceneCache;
 
     // The five neutral 1x1 maps that stand in for whatever a material omits.
@@ -453,12 +605,27 @@ private:
     std::vector<GpuMesh>      m_meshes;
     std::vector<GpuMaterial>  m_materials;
     std::vector<MeshInstance> m_instances;
+    std::vector<Decal>        m_decals;
+    // One bind group per decal texture, made on first use and kept.
+    struct DecalCache { rhi::TextureHandle tex; rhi::BindGroupHandle group; };
+    std::vector<DecalCache>   m_decalCache;
+    [[nodiscard]] rhi::BindGroupHandle decalGroup(rhi::TextureHandle);
+
+    struct DecalPush {
+        Vec4 modelRow0, modelRow1, modelRow2;
+        Vec4 invRow0, invRow1, invRow2;
+        Vec4 params;   // opacity, angleFade, 0, 0
+    };
     std::vector<u32>          m_opaque;        // indices into m_instances
     std::vector<u32>          m_blended;
     FrameUBO                  m_frameData{};
     SkyUBO                    m_skyData{};
     DeferredPush              m_deferredPush{};
     SsaoPush                  m_ssaoPush{};
+    VolumePush                m_volumePush{};
+    u32                       m_cascadeCount   = 1;
+    u32                       m_shadowAtlasRes = 2048;
+    bool                      m_volumetricOn   = false;
     Mat4                      m_prevViewProj = Mat4::identity();
     bool                      m_hasPrevFrame = false;
     Vec3                      m_cameraPos{};

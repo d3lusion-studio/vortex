@@ -116,6 +116,11 @@ struct MeshComp {
     renderer::MaterialHandle material;
     bool                     castsShadow    = true;
     bool                     receivesShadow = true;
+
+    // Filled by extractMeshes with last frame's world matrix, so motion blur can tell
+    // that this entity moved under a still camera. Not for the game to set.
+    Mat4 prevModel     = Mat4::identity();
+    bool hasPrevModel  = false;
 };
 
 }

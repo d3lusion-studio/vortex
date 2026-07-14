@@ -15,6 +15,10 @@ vortex_embed_shader(deferred.frag   deferred_frag_spv   _deferred_frag_header)
 vortex_embed_shader(ssao.frag       ssao_frag_spv       _ssao_frag_header)
 vortex_embed_shader(ssao_blur.frag  ssao_blur_frag_spv  _ssao_blur_frag_header)
 vortex_embed_shader(motion_blur.frag motion_blur_frag_spv _motion_blur_frag_header)
+vortex_embed_shader(volumetric.frag volumetric_frag_spv _volumetric_frag_header)
+vortex_embed_shader(blit.frag       blit_frag_spv       _blit_frag_header)
+vortex_embed_shader(decal.vert      decal_vert_spv      _decal_vert_header)
+vortex_embed_shader(decal.frag      decal_frag_spv      _decal_frag_header)
 vortex_embed_shader(fullscreen.vert fullscreen_vert_spv _fs_vert_header)
 vortex_embed_shader(bright.frag     bright_frag_spv     _bright_header)
 vortex_embed_shader(blur.frag       blur_frag_spv       _blur_header)
@@ -48,6 +52,10 @@ vortex_add_module(renderer
         ${_ssao_frag_header}
         ${_ssao_blur_frag_header}
         ${_motion_blur_frag_header}
+        ${_volumetric_frag_header}
+        ${_blit_frag_header}
+        ${_decal_vert_header}
+        ${_decal_frag_header}
         ${_fs_vert_header}
         ${_bright_header}
         ${_blur_header}

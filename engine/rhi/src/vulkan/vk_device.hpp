@@ -86,6 +86,7 @@ private:
     VkDescriptorPool         m_descriptorPool   = VK_NULL_HANDLE;
     VkDescriptorSetLayout    m_materialSetLayout = VK_NULL_HANDLE;  // set 0: combined image sampler
     VkDescriptorSetLayout    m_uniformSetLayout  = VK_NULL_HANDLE;  // a set: single uniform buffer
+    VkDescriptorSetLayout    m_frameSetLayout    = VK_NULL_HANDLE;  // a set: uniform + instance storage
     VkDescriptorSetLayout    m_sceneSetLayout    = VK_NULL_HANDLE;  // a set: 2 cubemaps + shadow map
     VkDescriptorSetLayout    m_pbrSetLayout      = VK_NULL_HANDLE;  // a set: 5 PBR maps + sampler
 

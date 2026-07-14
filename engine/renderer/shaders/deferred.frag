@@ -27,13 +27,17 @@ struct Light {
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4  viewProj;
-    mat4  lightViewProj;
+    mat4  lightViewProj;    // cascade 0; the vertex stage uses it for the forward path
     vec4  cameraPos;
-    vec4  ambient;
-    vec4  fogColor;
-    vec4  fogParams;
-    vec4  shadowParams;
-    vec4  misc;
+    vec4  ambient;          // rgb = IBL tint, w = IBL intensity
+    vec4  fogColor;         // rgb, w = density
+    vec4  fogParams;        // x = start, y = end, z = mode, w = height falloff
+    vec4  shadowParams;     // x = depth bias, y = normal bias, z = PCF radius, w = enabled
+    vec4  misc;             // x = light count, y = cascade count
+    vec4  contactParams;    // x = enabled, y = distance, z = steps, w = thickness
+    vec4  cascadeSplits;    // view distance at which each cascade ends
+    vec4  cascadeTexelWorld;  // world size of one shadow texel, per cascade
+    mat4  cascadeViewProj[4];
     Light lights[16];
 } uFrame;
 
@@ -56,6 +60,17 @@ layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// Pixel -> world, using the depth the G-buffer pass left behind.
+vec3 worldFromDepth(vec2 uv, float depth) {
+    vec4 clip  = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 world = pc.invViewProj * clip;
+    return world.xyz / world.w;
+}
 
 float distributionGGX(vec3 N, vec3 H, float rough) {
     float a2    = rough * rough * rough * rough;
@@ -91,26 +106,104 @@ vec2 envBRDFApprox(float NoV, float rough) {
     return vec2(-1.04, 1.04) * a004 + r.zw;
 }
 
-float shadowFactor(vec3 worldPos, float NdotL) {
+// PCF over a (2r+1)^2 kernel, against the cascade this fragment falls in.
+//
+// The cascades share one depth texture, tiled 2x2, so the lookup is scaled and offset
+// into the right quadrant — and clamped to it, or a PCF tap at a cascade's edge would
+// read its neighbour's depth and stamp a hard seam across the ground.
+// Returns 1.0 = fully lit, 0.0 = fully shadowed.
+float shadowFactor(vec3 worldPos, vec3 N, float NdotL) {
     if (uFrame.shadowParams.w < 0.5) return 1.0;
 
-    vec4 lightPos = uFrame.lightViewProj * vec4(worldPos, 1.0);
-    vec3 proj = lightPos.xyz / lightPos.w;
+    int   count    = max(int(uFrame.misc.y), 1);
+    float viewDist = distance(uFrame.cameraPos.xyz, worldPos);
+
+    int c = count - 1;
+    for (int i = 0; i < count; ++i)
+        if (viewDist < uFrame.cascadeSplits[i]) { c = i; break; }
+
+    // Normal-offset bias. A far cascade's texel covers metres of ground, so the one
+    // depth it stores is wrong by up to that much across the texel — which is what
+    // stripes a flat floor with acne. Offsetting the lookup along the surface normal by
+    // a texel's own world width sidesteps it, and unlike a bigger depth bias it does not
+    // detach the shadow from its caster.
+    float texelWorld = uFrame.cascadeTexelWorld[c];
+    vec3  offsetPos  = worldPos + N * (texelWorld * 1.5 * (2.0 - NdotL));
+
+    vec4 lp   = uFrame.cascadeViewProj[c] * vec4(offsetPos, 1.0);
+    vec3 proj = lp.xyz / lp.w;
     vec2 uv   = proj.xy * 0.5 + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z > 1.0) return 1.0;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z > 1.0)
+        return 1.0;   // outside this cascade's frustum: treat as lit
+
+    // One cascade gets the whole map; several share it as quadrants.
+    float tileScale = (count > 1) ? 0.5 : 1.0;
+    vec2  tile      = (count > 1) ? vec2(float(c % 2), float(c / 2)) * 0.5 : vec2(0.0);
 
     float bias  = max(uFrame.shadowParams.x * (1.0 - NdotL), uFrame.shadowParams.y);
     vec2  texel = 1.0 / vec2(textureSize(sampler2D(uShadowMap, uShadowSampler), 0));
     int   r     = int(uFrame.shadowParams.z);
 
-    float sum = 0.0, count = 0.0;
+    vec2 lo = tile + texel;
+    vec2 hi = tile + vec2(tileScale) - texel;
+
+    float sum   = 0.0;
+    float count2 = 0.0;
     for (int x = -r; x <= r; ++x)
         for (int y = -r; y <= r; ++y) {
-            float d = texture(sampler2D(uShadowMap, uShadowSampler), uv + vec2(x, y) * texel).r;
-            sum   += (proj.z - bias > d) ? 0.0 : 1.0;
-            count += 1.0;
+            vec2 auv = clamp(uv * tileScale + tile + vec2(x, y) * texel, lo, hi);
+            float d  = texture(sampler2D(uShadowMap, uShadowSampler), auv).r;
+            sum    += (proj.z - bias > d) ? 0.0 : 1.0;
+            count2 += 1.0;
         }
-    return sum / count;
+    return sum / count2;
+}
+
+// March the depth buffer from the surface toward the light for a short distance. A
+// shadow-map texel spans centimetres of world at best; the dark line where an object
+// meets the floor is finer than that, and this is where it comes from.
+//
+// It can only see what the depth buffer holds, so a blocker off-screen or hidden behind
+// something else does not exist. That is why the distance is kept short: it is a detail
+// pass layered on the shadow map, not a second shadowing system.
+float contactShadow(vec3 worldPos, vec3 N, vec3 L, vec2 uv) {
+    if (uFrame.contactParams.x < 0.5) return 1.0;
+
+    int   steps = int(uFrame.contactParams.z);
+    float step  = uFrame.contactParams.y / float(steps);
+
+    // Start the ray off the surface, along the normal. Marched from the surface itself,
+    // a ray over a floor seen at a grazing angle keeps landing on pixels holding that
+    // same floor, reads them as blockers, and rings the whole ground with false shadow.
+    vec3 origin = worldPos + N * (uFrame.contactParams.y * 0.1);
+
+    // Dither the phase, or the fixed step size prints its own arcs across the floor.
+    float jitter = hash(uv * 1024.0);
+
+    for (int i = 0; i < steps; ++i) {
+        vec3 p = origin + L * (step * (float(i) + jitter));
+
+        vec4 clip = uFrame.viewProj * vec4(p, 1.0);
+        if (clip.w <= 0.0) break;
+        vec2 suv = (clip.xy / clip.w) * 0.5 + 0.5;
+        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) break;
+
+        float sceneDepth = texture(sampler2D(gDepth, gSampler), suv).r;
+        if (sceneDepth >= 1.0) continue;
+
+        vec3  scenePos = worldFromDepth(suv, sceneDepth);
+        float dRay     = distance(uFrame.cameraPos.xyz, p);
+        float dScene   = distance(uFrame.cameraPos.xyz, scenePos);
+
+        // The scene is in front of the ray: something blocks the light. `thickness` is
+        // how far behind a surface the ray may be and still count as blocked by it — it
+        // has to be roomy, because the moment the ray crosses an object's silhouette the
+        // depth gap jumps to however far in front that object is, not to zero. Too tight
+        // a value and the test never fires at all.
+        float diff = dRay - dScene;
+        if (diff > 0.0 && diff < uFrame.contactParams.w) return 0.0;
+    }
+    return 1.0;
 }
 
 float distanceAttenuation(float dist, float range) {
@@ -119,12 +212,6 @@ float distanceAttenuation(float dist, float range) {
     return (f * f) / max(dist * dist, 0.0001);
 }
 
-// Pixel -> world, using the depth the G-buffer pass left behind.
-vec3 worldFromDepth(vec2 uv, float depth) {
-    vec4 clip  = vec4(uv * 2.0 - 1.0, depth, 1.0);
-    vec4 world = pc.invViewProj * clip;
-    return world.xyz / world.w;
-}
 
 void main() {
     float depth = texture(sampler2D(gDepth, gSampler), vUV).r;
@@ -207,7 +294,10 @@ void main() {
         vec3 specular = (NDF * G * F) / (4.0 * NdotV * max(dot(N, Ls), 0.0001) + 0.0001);
         vec3 kD       = (vec3(1.0) - F) * (1.0 - metallic);
 
-        float shadow = (i == 0 && type == 0) ? shadowFactor(worldPos, NdotL) : 1.0;
+        float shadow = (i == 0 && type == 0) ? shadowFactor(worldPos, N, NdotL) : 1.0;
+        // Contact shadows apply to every light, not just the one with a shadow map:
+        // the depth buffer is the same regardless of which way the light is coming from.
+        shadow *= contactShadow(worldPos, N, L, vUV);
 
         Lo += (kD * albedo / PI + specular) * lt.color.rgb * lt.color.w * atten * NdotL * shadow;
     }

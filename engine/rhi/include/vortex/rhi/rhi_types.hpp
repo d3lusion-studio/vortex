@@ -45,6 +45,12 @@ struct BindGroupDesc {
     BufferHandle  uniformBuffer{};
     u64           uniformSize = 0;
 
+    // Per-instance data, read in the shader by gl_InstanceIndex. It rides in the same
+    // set as the frame uniforms (binding 1), because a 3D pipeline has no spare set —
+    // and because both are "what this draw needs to know", refreshed once per frame.
+    BufferHandle  storageBuffer{};
+    u64           storageSize = 0;
+
     // Scene set: everything the lit pass needs about the world rather than about
     // the surface — the two IBL cubemaps (irradiance + environment) and the shadow
     // map. They live in one set because a 3D pipeline only gets four, and the
@@ -55,6 +61,11 @@ struct BindGroupDesc {
     SamplerHandle iblSampler{};
     TextureHandle shadowMap{};
     SamplerHandle shadowSampler{};
+    // The lit scene, for refraction. A pass cannot sample the target it writes, so this
+    // is a copy taken after the opaque pass — see MeshRenderer::setSceneColor.
+    TextureHandle sceneColor{};
+    // The scene's depth. A decal needs it to work out which surface its volume lands on.
+    TextureHandle sceneDepth{};
 
     // PBR material set: the five maps of a metallic-roughness material, sharing
     // one sampler. Any handle left invalid must be filled by the caller with a
@@ -117,8 +128,13 @@ struct GraphicsPipelineDesc {
     // Supersedes the two bools above when set to anything but Opaque. The bools stay
     // because most 2D pipelines only ever need those two modes and read better that way.
     BlendMode              blendMode   = BlendMode::Opaque;
+    // Off = the pipeline writes RGB and leaves the target's alpha alone. A decal blending
+    // into the G-buffer's albedo needs this: that target's alpha is the METALLIC channel,
+    // and an alpha blend would drag it toward the decal's coverage, which is meaningless.
+    bool                   writeAlpha  = true;
     bool                   hasMaterialTexture = false;  // a set: sampled image + sampler
     bool                   hasUniformBuffer   = false;  // a set: single uniform buffer (vtx+frag)
+    bool                   hasInstanceBuffer  = false;  // adds a storage buffer to that set
     bool                   hasSceneTextures   = false;  // a set: IBL cubemaps + shadow map
     bool                   hasPbrMaterial     = false;  // a set: the five PBR maps + sampler
     u32                    pushConstantSize   = 0;       // vertex-stage push constant block bytes

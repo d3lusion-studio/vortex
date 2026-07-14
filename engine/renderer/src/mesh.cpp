@@ -15,6 +15,10 @@
 #include "deferred_frag_spv.h"
 #include "ssao_frag_spv.h"
 #include "ssao_blur_frag_spv.h"
+#include "volumetric_frag_spv.h"
+#include "blit_frag_spv.h"
+#include "decal_vert_spv.h"
+#include "decal_frag_spv.h"
 #include "fullscreen_vert_spv.h"
 
 #include <algorithm>
@@ -511,8 +515,10 @@ MeshRenderer::MeshRenderer(rhi::IGraphicsDevice& device, rhi::Format colorFormat
     gd.colorFormat        = kGBufferAlbedoFormat;
     gd.extraColorFormats[0] = kGBufferNormalFormat;
     gd.extraColorFormats[1] = kGBufferEmissiveFormat;
+    gd.extraColorFormats[2] = kGBufferVelocityFormat;
     gd.hasPbrMaterial     = true;   // set 0
     gd.hasUniformBuffer   = true;   // set 1 (the vertex stage needs viewProj)
+    gd.hasInstanceBuffer  = true;   // set 1, binding 1: previous model matrices
     gd.pushConstantSize   = sizeof(Push);
     gd.depthTest          = true;
     gd.depthWrite         = true;
@@ -566,12 +572,72 @@ MeshRenderer::MeshRenderer(rhi::IGraphicsDevice& device, rhi::Format colorFormat
     bd.debugName           = "ssao_blur";
     m_ssaoBlurPipeline = m_device.createGraphicsPipeline(bd);
 
+    // Volumetric fog: fullscreen, marches the shadow map along each view ray, and adds
+    // what it finds to the lit image.
+    rhi::GraphicsPipelineDesc vd;
+    vd.vertexSpirv      = toBytes(fullscreen_vert_spv, fullscreen_vert_spv_size);
+    vd.fragmentSpirv    = toBytes(volumetric_frag_spv, volumetric_frag_spv_size);
+    vd.vertexWgsl       = fullscreen_vert_spv_wgsl;
+    vd.fragmentWgsl     = volumetric_frag_spv_wgsl;
+    vd.topology         = rhi::PrimitiveTopology::TriangleList;
+    vd.cull             = rhi::CullMode::None;
+    vd.colorFormat      = colorFormat;
+    vd.blendMode        = rhi::BlendMode::Additive;
+    vd.hasPbrMaterial   = true;    // set 0: the G-buffer (depth)
+    vd.hasUniformBuffer = true;    // set 1: frame data
+    vd.hasSceneTextures = true;    // set 2: the shadow map
+    vd.pushConstantSize = sizeof(VolumePush);
+    vd.debugName        = "volumetric";
+    m_volumetricPipeline = m_device.createGraphicsPipeline(vd);
+
+    rhi::GraphicsPipelineDesc cd;
+    cd.vertexSpirv        = toBytes(fullscreen_vert_spv, fullscreen_vert_spv_size);
+    cd.fragmentSpirv      = toBytes(blit_frag_spv, blit_frag_spv_size);
+    cd.vertexWgsl         = fullscreen_vert_spv_wgsl;
+    cd.fragmentWgsl       = blit_frag_spv_wgsl;
+    cd.topology           = rhi::PrimitiveTopology::TriangleList;
+    cd.cull               = rhi::CullMode::None;
+    cd.colorFormat        = colorFormat;
+    cd.hasMaterialTexture = true;   // set 0: the source texture
+    cd.debugName          = "scene_copy";
+    m_blitPipeline = m_device.createGraphicsPipeline(cd);
+
+    // Decals: draw the volume's BACK faces with no depth test at all. Back faces, so the
+    // box still covers the screen when the camera is inside it; no depth test, because the
+    // fragment stage decides what is inside the volume from the depth buffer itself, and a
+    // depth test here would only reject the very pixels it needs to look at.
+    rhi::GraphicsPipelineDesc dcl;
+    dcl.vertexSpirv         = toBytes(decal_vert_spv, decal_vert_spv_size);
+    dcl.fragmentSpirv       = toBytes(decal_frag_spv, decal_frag_spv_size);
+    dcl.vertexWgsl          = decal_vert_spv_wgsl;
+    dcl.fragmentWgsl        = decal_frag_spv_wgsl;
+    dcl.vertexLayout.stride = sizeof(MeshVertex);
+    dcl.vertexLayout.attributes = {
+        {.location = 0, .format = rhi::VertexFormat::Float3, .offset = offsetof(MeshVertex, position)},
+    };
+    dcl.topology           = rhi::PrimitiveTopology::TriangleList;
+    dcl.cull               = rhi::CullMode::Front;
+    dcl.colorFormat        = kGBufferAlbedoFormat;
+    dcl.blendMode          = rhi::BlendMode::Alpha;
+    // The albedo target's alpha is the METALLIC channel. Blending into it would drag
+    // metallic toward the decal's coverage, which means nothing — so leave alpha alone.
+    dcl.writeAlpha         = false;
+    dcl.hasMaterialTexture = true;   // set 0: the decal's texture
+    dcl.hasUniformBuffer   = true;   // set 1: frame data (viewProj, invViewProj)
+    dcl.hasSceneTextures   = true;   // set 2: the G-buffer's depth
+    dcl.pushConstantSize   = sizeof(DecalPush);
+    dcl.depthTest          = false;
+    dcl.depthWrite         = false;
+    dcl.debugName          = "decal";
+    m_decalPipeline = m_device.createGraphicsPipeline(dcl);
+
     for (u32 i = 0; i < rhi::kMaxFramesInFlight; ++i) {
         m_uniformBuffers[i] = m_device.createBuffer(
             {.size = sizeof(FrameUBO), .usage = rhi::BufferUsage::Uniform,
              .domain = rhi::MemoryDomain::Upload, .debugName = "mesh_frame_ubo"});
-        m_uniformBindGroups[i] = m_device.createBindGroup(
-            {.uniformBuffer = m_uniformBuffers[i], .uniformSize = sizeof(FrameUBO)});
+        // The bind group is created in ensureInstanceCapacity(), because it has to name
+        // the instance buffer, which does not exist until the first frame's instance
+        // count is known.
 
         m_skyBuffers[i] = m_device.createBuffer(
             {.size = sizeof(SkyUBO), .usage = rhi::BufferUsage::Uniform,
@@ -612,10 +678,38 @@ MeshRenderer::MeshRenderer(rhi::IGraphicsDevice& device, rhi::Format colorFormat
                                                .addressU  = rhi::AddressMode::Repeat,
                                                .addressV  = rhi::AddressMode::Repeat});
 
-    m_shadowMap = m_dummyShadow;
+    m_shadowMap  = m_dummyShadow;
+    m_sceneColor = m_black;   // nothing behind a transmissive surface until told otherwise
+    m_sceneDepth = m_dummyShadow;
     rebuildSceneBindGroup();
 
     m_defaultMaterial = createMaterial(MaterialDesc{});
+    m_unitCube        = createMesh(makeCube(1.0f));
+    ensureInstanceCapacity(256);
+}
+
+void MeshRenderer::ensureInstanceCapacity(u32 count) {
+    if (count <= m_instanceCapacity) return;
+
+    // Grow by doubling, so a scene that creeps upward does not reallocate every frame.
+    u32 cap = m_instanceCapacity > 0 ? m_instanceCapacity : 256;
+    while (cap < count) cap *= 2;
+
+    m_device.waitIdle();   // the old buffers may still be in flight
+    for (u32 i = 0; i < rhi::kMaxFramesInFlight; ++i) {
+        if (m_uniformBindGroups[i].valid()) m_device.destroyBindGroup(m_uniformBindGroups[i]);
+        if (m_instanceBuffers[i].valid())   m_device.destroyBuffer(m_instanceBuffers[i]);
+
+        m_instanceBuffers[i] = m_device.createBuffer(
+            {.size = static_cast<u64>(cap) * sizeof(GpuInstance),
+             .usage = rhi::BufferUsage::Storage, .domain = rhi::MemoryDomain::Upload,
+             .debugName = "mesh_instances"});
+        m_uniformBindGroups[i] = m_device.createBindGroup(
+            {.uniformBuffer = m_uniformBuffers[i], .uniformSize = sizeof(FrameUBO),
+             .storageBuffer = m_instanceBuffers[i],
+             .storageSize   = static_cast<u64>(cap) * sizeof(GpuInstance)});
+    }
+    m_instanceCapacity = cap;
 }
 
 MeshRenderer::~MeshRenderer() {
@@ -633,11 +727,13 @@ MeshRenderer::~MeshRenderer() {
     for (u32 i = 0; i < rhi::kMaxFramesInFlight; ++i) {
         m_device.destroyBindGroup(m_uniformBindGroups[i]);
         m_device.destroyBuffer(m_uniformBuffers[i]);
+        if (m_instanceBuffers[i].valid()) m_device.destroyBuffer(m_instanceBuffers[i]);
         m_device.destroyBindGroup(m_skyBindGroups[i]);
         m_device.destroyBuffer(m_skyBuffers[i]);
     }
     for (const SceneCache& sc : m_sceneCache) m_device.destroyBindGroup(sc.group);
     for (const GBufferCache& gc : m_gbufferCache) m_device.destroyBindGroup(gc.group);
+    for (const DecalCache& dc : m_decalCache) m_device.destroyBindGroup(dc.group);
 
     m_device.destroySampler(m_defaultSampler);
     m_device.destroySampler(m_shadowSampler);
@@ -650,6 +746,9 @@ MeshRenderer::~MeshRenderer() {
     m_device.destroyTexture(m_envMap);
 
     for (const CachedPipeline& cp : m_pipelines) m_device.destroyPipeline(cp.pipeline);
+    m_device.destroyPipeline(m_decalPipeline);
+    m_device.destroyPipeline(m_blitPipeline);
+    m_device.destroyPipeline(m_volumetricPipeline);
     m_device.destroyPipeline(m_ssaoBlurPipeline);
     m_device.destroyPipeline(m_ssaoPipeline);
     m_device.destroyPipeline(m_deferredPipeline);
@@ -674,7 +773,11 @@ rhi::TextureHandle MeshRenderer::defaultTexture(Vec4 rgba) {
 
 void MeshRenderer::rebuildSceneBindGroup() {
     for (const SceneCache& sc : m_sceneCache)
-        if (sc.tex == m_shadowMap) { m_sceneBindGroup = sc.group; return; }
+        if (sc.shadow == m_shadowMap && sc.sceneColor == m_sceneColor &&
+            sc.sceneDepth == m_sceneDepth) {
+            m_sceneBindGroup = sc.group;
+            return;
+        }
 
     const rhi::BindGroupHandle group = m_device.createBindGroup({
         .isSceneSet    = true,
@@ -683,9 +786,26 @@ void MeshRenderer::rebuildSceneBindGroup() {
         .iblSampler    = m_iblSampler,
         .shadowMap     = m_shadowMap,
         .shadowSampler = m_shadowSampler,
+        .sceneColor    = m_sceneColor,
+        .sceneDepth    = m_sceneDepth,
     });
-    m_sceneCache.push_back({m_shadowMap, group});
+    m_sceneCache.push_back({m_shadowMap, m_sceneColor, m_sceneDepth, group});
     m_sceneBindGroup = group;
+}
+
+void MeshRenderer::setSceneColor(rhi::TextureHandle tex) {
+    const rhi::TextureHandle next = tex.valid() ? tex : m_black;
+    if (next == m_sceneColor) return;
+    m_sceneColor = next;
+    rebuildSceneBindGroup();
+}
+
+void MeshRenderer::renderSceneCopy(rhi::ICommandList& cmd, rhi::BindGroupHandle source) {
+    if (!source.valid()) return;
+    VORTEX_PROFILE_ZONE("mesh.scene_copy");
+    cmd.setPipeline(m_blitPipeline);
+    cmd.setBindGroup(0, source);
+    cmd.draw(3);
 }
 
 void MeshRenderer::setShadowMap(rhi::TextureHandle tex) {
@@ -719,6 +839,7 @@ rhi::PipelineHandle MeshRenderer::pipelineFor(PipelineKey key) {
     pd.blendMode        = key.blend;
     pd.hasPbrMaterial   = true;     // set 0: the material's five maps
     pd.hasUniformBuffer = true;     // set 1: per-frame data
+    pd.hasInstanceBuffer = true;    // set 1, binding 1: previous model matrices
     pd.hasSceneTextures = true;     // set 2: IBL cubemaps + shadow map
     pd.pushConstantSize = sizeof(Push);
     pd.depthTest        = true;
@@ -801,8 +922,99 @@ void MeshRenderer::destroyMaterial(MaterialHandle h) {
     mat.alive = false;
 }
 
+void MeshRenderer::buildCascades(const Camera& camera, const DirectionalLight& sun,
+                                 const ShadowSettings& sh) {
+    const Vec3 lightDir = normalize(sun.direction);
+    const Vec3 up = std::fabs(lightDir.y) > 0.99f ? Vec3{0.0f, 0.0f, 1.0f}
+                                                  : Vec3{0.0f, 1.0f, 0.0f};
+
+    const f32 nearZ = camera.nearZ;
+    const f32 farZ  = std::min(sh.maxDistance, camera.farZ);
+
+    // Where the splits fall. A uniform spread wastes the near cascade on distance a
+    // perspective camera barely uses; a logarithmic one starves the far cascade.
+    // `splitLambda` mixes them — the standard practical-split-scheme compromise.
+    f32 splits[kMaxCascades + 1];
+    splits[0] = nearZ;
+    for (u32 i = 1; i <= m_cascadeCount; ++i) {
+        const f32 t   = static_cast<f32>(i) / static_cast<f32>(m_cascadeCount);
+        const f32 log = nearZ * std::pow(farZ / nearZ, t);
+        const f32 uni = nearZ + (farZ - nearZ) * t;
+        splits[i] = sh.splitLambda * log + (1.0f - sh.splitLambda) * uni;
+    }
+
+    // The camera's basis, to walk out its frustum corners.
+    const Vec3 fwd   = normalize(camera.target - camera.position);
+    const Vec3 right = normalize(cross(fwd, camera.up));
+    const Vec3 camUp = cross(right, fwd);
+
+    const f32 tanHalfV = std::tan(camera.fovYRadians * 0.5f);
+    const f32 tanHalfH = tanHalfV * camera.aspect;
+
+    for (u32 c = 0; c < m_cascadeCount; ++c) {
+        const f32 zn = splits[c], zf = splits[c + 1];
+
+        Vec3 corners[8];
+        u32  n = 0;
+        for (const f32 z : {zn, zf}) {
+            const Vec3 centre = camera.position + fwd * z;
+            const f32  h = tanHalfV * z, w = tanHalfH * z;
+            corners[n++] = centre + camUp * h + right * w;
+            corners[n++] = centre + camUp * h - right * w;
+            corners[n++] = centre - camUp * h + right * w;
+            corners[n++] = centre - camUp * h - right * w;
+        }
+
+        // Fit a SPHERE to the slice, not a box. A box fitted to the frustum changes size
+        // as the camera turns, and a shadow map that resizes every frame shimmers; the
+        // bounding sphere of a slice is rotation-invariant, so the map stays steady.
+        Vec3 centroid{0.0f, 0.0f, 0.0f};
+        for (const Vec3& p : corners) centroid = centroid + p;
+        centroid = centroid * (1.0f / 8.0f);
+
+        f32 radius = 0.0f;
+        for (const Vec3& p : corners) radius = std::max(radius, length(p - centroid));
+        radius = std::ceil(radius * 16.0f) / 16.0f;   // quantise, so it stops breathing
+
+        const f32  depth = radius * 4.0f;   // room for casters standing behind the slice
+        const Vec3 eye   = centroid - lightDir * (radius * 2.0f);
+
+        Mat4 view = Mat4::lookAt(eye, centroid, up);
+        Mat4 proj = Mat4::orthoRH(-radius, radius, -radius, radius, 0.0f, depth);
+
+        // Snap the whole cascade to whole shadow texels. Without this the map slides
+        // under the geometry by a fraction of a texel every frame and the shadow edges
+        // crawl — the single most visible CSM artefact there is.
+        const f32  texels = static_cast<f32>(m_shadowAtlasRes) /
+                            (m_cascadeCount > 1 ? 2.0f : 1.0f);
+        const Mat4 vp     = proj * view;
+        const Vec4 origin = vp * Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+        const f32  sx = origin.x * texels * 0.5f, sy = origin.y * texels * 0.5f;
+        const f32  ox = (std::round(sx) - sx) * 2.0f / texels;
+        const f32  oy = (std::round(sy) - sy) * 2.0f / texels;
+        proj.at(0, 3) += ox;
+        proj.at(1, 3) += oy;
+
+        m_frameData.cascadeViewProj[c] = proj * view;
+        reinterpret_cast<f32*>(&m_frameData.cascadeSplits)[c] = zf;
+        // What one texel of this cascade covers in world units — the shader offsets its
+        // lookup by this much along the normal, which is what keeps a far cascade's
+        // coarse texels from striping the ground with acne.
+        reinterpret_cast<f32*>(&m_frameData.cascadeTexelWorld)[c] = 2.0f * radius / texels;
+    }
+
+    // Unused cascade slots point past the far plane, so nothing ever selects them.
+    for (u32 c = m_cascadeCount; c < kMaxCascades; ++c) {
+        m_frameData.cascadeViewProj[c] = m_frameData.cascadeViewProj[m_cascadeCount - 1];
+        reinterpret_cast<f32*>(&m_frameData.cascadeSplits)[c] = farZ;
+        reinterpret_cast<f32*>(&m_frameData.cascadeTexelWorld)[c] =
+            reinterpret_cast<f32*>(&m_frameData.cascadeTexelWorld)[m_cascadeCount - 1];
+    }
+}
+
 void MeshRenderer::begin(const Camera& camera, const SceneLighting& scene) {
     m_instances.clear();
+    m_decals.clear();
     m_opaque.clear();
     m_blended.clear();
     m_classified = false;
@@ -816,23 +1028,24 @@ void MeshRenderer::begin(const Camera& camera, const SceneLighting& scene) {
     const DirectionalLight& sun = scene.sun;
     const Vec3 d = normalize(sun.direction);
 
-    // Orthographic shadow camera looking along the light direction at the target.
-    const Vec3 eye = sun.shadowTarget - d * sun.shadowDistance;
-    const Vec3 up  = std::fabs(d.y) > 0.99f ? Vec3{0.0f, 0.0f, 1.0f} : Vec3{0.0f, 1.0f, 0.0f};
-    const f32  e   = sun.shadowExtent;
-    const Mat4 lightView = Mat4::lookAt(eye, sun.shadowTarget, up);
-    const Mat4 lightProj = Mat4::orthoRH(-e, e, -e, e, 0.05f, sun.shadowDistance * 2.0f);
-
     const Mat4 viewProj = camera.viewProjection();
     m_cameraPos = camera.position;
+
+    const ShadowSettings& sh = scene.shadow;
+    m_cascadeCount   = std::clamp(sh.cascadeCount, 1u, kMaxCascades);
+    m_shadowAtlasRes = std::max(sh.resolution, 1u);
+    buildCascades(camera, sun, sh);
 
     // m_frameData still holds last frame's matrix at this point — grab it before it is
     // overwritten; that is the whole of what motion blur needs to know about the past.
     if (m_hasPrevFrame) m_prevViewProj = m_frameData.viewProj;
+    else                m_prevViewProj = viewProj;   // first frame: nothing has moved yet
     m_hasPrevFrame = true;
+    m_frameData.prevViewProj = m_prevViewProj;
+    m_frameData.invViewProj  = viewProj.inverse();
 
     m_frameData.viewProj      = viewProj;
-    m_frameData.lightViewProj = lightProj * lightView;
+    m_frameData.lightViewProj = m_frameData.cascadeViewProj[0];
     m_frameData.cameraPos = {camera.position.x, camera.position.y, camera.position.z, 0.0f};
     m_frameData.ambient   = {sun.ambient.x, sun.ambient.y, sun.ambient.z, 1.0f};
 
@@ -840,10 +1053,13 @@ void MeshRenderer::begin(const Camera& camera, const SceneLighting& scene) {
     m_frameData.fogColor  = {fog.color.x, fog.color.y, fog.color.z, fog.density};
     m_frameData.fogParams = {fog.start, fog.end, static_cast<f32>(fog.mode), fog.heightFalloff};
 
-    const ShadowSettings& sh = scene.shadow;
     m_frameData.shadowParams = {sh.depthBias, sh.normalBias,
                                 static_cast<f32>(std::max(sh.pcfRadius, 0)),
                                 sh.enabled ? 1.0f : 0.0f};
+
+    const ContactShadows& cs = scene.contactShadows;
+    m_frameData.contactParams = {cs.enabled ? 1.0f : 0.0f, cs.distance,
+                                 static_cast<f32>(std::max(cs.steps, 1)), cs.thickness};
 
     // Light 0 is always the sun: the shadow map was rendered from it, and the
     // shader only consults the shadow map for light 0.
@@ -864,7 +1080,7 @@ void MeshRenderer::begin(const Camera& camera, const SceneLighting& scene) {
         g.params    = {std::cos(lt.innerAngle), std::cos(lt.outerAngle), lt.radius, 0.0f};
         ++count;
     }
-    m_frameData.misc = {static_cast<f32>(count), 0.0f, 0.0f, 0.0f};
+    m_frameData.misc = {static_cast<f32>(count), static_cast<f32>(m_cascadeCount), 0.0f, 0.0f};
 
     m_skyData.invViewProj = viewProj.inverse();
     m_skyData.cameraPos   = m_frameData.cameraPos;
@@ -877,6 +1093,13 @@ void MeshRenderer::begin(const Camera& camera, const SceneLighting& scene) {
     m_ssaoPush.invViewProj = m_skyData.invViewProj;
     m_ssaoPush.params      = {scene.ssao.radius, scene.ssao.intensity,
                               scene.ssao.bias, scene.ssao.power};
+
+    const VolumetricFog& vf = scene.volumetric;
+    m_volumetricOn          = vf.enabled;
+    m_volumePush.invViewProj = m_skyData.invViewProj;
+    m_volumePush.params = {vf.density, static_cast<f32>(std::max(vf.steps, 1)),
+                           vf.maxDistance, std::clamp(vf.anisotropy, -0.95f, 0.95f)};
+    m_volumePush.color  = {vf.color.x, vf.color.y, vf.color.z, 0.0f};
 
     m_device.updateBuffer(m_uniformBuffers[m_frame], &m_frameData, sizeof(FrameUBO));
     m_device.updateBuffer(m_skyBuffers[m_frame], &m_skyData, sizeof(SkyUBO));
@@ -897,18 +1120,45 @@ void MeshRenderer::renderShadow(rhi::ICommandList& cmd) {
 
     VORTEX_PROFILE_ZONE("mesh.shadow");
     cmd.setPipeline(m_shadowPipeline);
-    for (const MeshInstance& inst : m_instances) {
-        if (!inst.castsShadow) continue;
-        if (!inst.mesh.valid() || inst.mesh.index >= m_meshes.size()) continue;
-        const GpuMesh& gm = m_meshes[inst.mesh.index];
-        if (!gm.alive || gm.indexCount == 0) continue;
 
-        const Mat4 lightMvp = m_frameData.lightViewProj * inst.model;
-        cmd.pushConstants(&lightMvp, sizeof(Mat4));
-        cmd.setVertexBuffer(0, gm.vbo);
-        cmd.setIndexBuffer(gm.ibo, rhi::IndexType::U32);
-        cmd.drawIndexed(gm.indexCount);
+    // One cascade fills the map; several tile it 2x2. Each gets its own viewport, so the
+    // same geometry is recorded once per cascade against a different light matrix.
+    const f32 res  = static_cast<f32>(m_shadowAtlasRes);
+    const f32 tile = m_cascadeCount > 1 ? res * 0.5f : res;
+
+    for (u32 c = 0; c < m_cascadeCount; ++c) {
+        const f32 tx = m_cascadeCount > 1 ? static_cast<f32>(c % 2) * tile : 0.0f;
+        const f32 ty = m_cascadeCount > 1 ? static_cast<f32>(c / 2) * tile : 0.0f;
+
+        cmd.setViewport({.x = tx, .y = ty, .width = tile, .height = tile});
+        cmd.setScissor(static_cast<u32>(tx), static_cast<u32>(ty),
+                       static_cast<u32>(tile), static_cast<u32>(tile));
+
+        for (const MeshInstance& inst : m_instances) {
+            if (!inst.castsShadow) continue;
+            if (!inst.mesh.valid() || inst.mesh.index >= m_meshes.size()) continue;
+            const GpuMesh& gm = m_meshes[inst.mesh.index];
+            if (!gm.alive || gm.indexCount == 0) continue;
+
+            const Mat4 lightMvp = m_frameData.cascadeViewProj[c] * inst.model;
+            cmd.pushConstants(&lightMvp, sizeof(Mat4));
+            cmd.setVertexBuffer(0, gm.vbo);
+            cmd.setIndexBuffer(gm.ibo, rhi::IndexType::U32);
+            cmd.drawIndexed(gm.indexCount);
+        }
     }
+}
+
+void MeshRenderer::renderVolumetric(rhi::ICommandList& cmd) {
+    if (!m_volumetricOn || !m_ssaoBindGroup.valid()) return;
+    VORTEX_PROFILE_ZONE("mesh.volumetric");
+
+    cmd.setPipeline(m_volumetricPipeline);
+    cmd.setBindGroup(0, m_ssaoBindGroup);                // set 0: G-buffer (depth)
+    cmd.setBindGroup(1, m_uniformBindGroups[m_frame]);   // set 1: frame data
+    cmd.setBindGroup(2, m_sceneBindGroup);               // set 2: the shadow map
+    cmd.pushConstants(&m_volumePush, sizeof(VolumePush));
+    cmd.draw(3);
 }
 
 void MeshRenderer::renderSkybox(rhi::ICommandList& cmd) {
@@ -919,7 +1169,8 @@ void MeshRenderer::renderSkybox(rhi::ICommandList& cmd) {
     cmd.draw(3);
 }
 
-void MeshRenderer::recordInstance(rhi::ICommandList& cmd, const MeshInstance& inst) {
+void MeshRenderer::recordInstance(rhi::ICommandList& cmd, const MeshInstance& inst,
+                                  u32 instanceIndex) {
     const GpuMesh& gm = m_meshes[inst.mesh.index];
 
     const MaterialHandle mh = inst.material.valid() ? inst.material : m_defaultMaterial;
@@ -931,7 +1182,12 @@ void MeshRenderer::recordInstance(rhi::ICommandList& cmd, const MeshInstance& in
     const bool bare = !inst.material.valid();
 
     Push pc;
-    pc.model = inst.model;
+    // The first three rows of the model matrix; the fourth is (0,0,0,1) by construction.
+    const Mat4& m = inst.model;
+    pc.modelRow0 = {m.at(0, 0), m.at(0, 1), m.at(0, 2), m.at(0, 3)};
+    pc.modelRow1 = {m.at(1, 0), m.at(1, 1), m.at(1, 2), m.at(1, 3)};
+    pc.modelRow2 = {m.at(2, 0), m.at(2, 1), m.at(2, 2), m.at(2, 3)};
+
     pc.color = bare ? inst.color
                     : Vec4{d.baseColor.x * inst.color.x, d.baseColor.y * inst.color.y,
                            d.baseColor.z * inst.color.z, d.baseColor.w * inst.color.w};
@@ -944,13 +1200,66 @@ void MeshRenderer::recordInstance(rhi::ICommandList& cmd, const MeshInstance& in
                  bare ? 1.0f : d.uvScale,
                  (!bare && d.unlit) ? 1.0f : 0.0f,
                  inst.receivesShadow ? 1.0f : 0.0f};
+    pc.extra  = bare ? Vec4{0.0f, 0.0f, 0.0f, 1.5f}
+                     : Vec4{d.parallaxScale,
+                            static_cast<f32>(std::max(d.parallaxLayers, 4)),
+                            d.transmission, d.ior};
 
     cmd.setBindGroup(0, mat.bindGroup);
     cmd.pushConstants(&pc, sizeof(Push));
     cmd.setVertexBuffer(0, gm.vbo);
     cmd.setIndexBuffer(gm.ibo, rhi::IndexType::U32);
-    cmd.drawIndexed(gm.indexCount);
+    // firstInstance is how the vertex stage learns its index: gl_InstanceIndex picks up
+    // exactly this value, which costs nothing and needs no push-constant bytes — of which
+    // there are none left.
+    cmd.drawIndexed(gm.indexCount, 1, 0, 0, instanceIndex);
     ++m_drawCalls;
+}
+
+void MeshRenderer::submitDecal(const Decal& d) { m_decals.push_back(d); }
+
+rhi::BindGroupHandle MeshRenderer::decalGroup(rhi::TextureHandle tex) {
+    for (const DecalCache& dc : m_decalCache)
+        if (dc.tex == tex) return dc.group;
+
+    const rhi::BindGroupHandle group = m_device.createBindGroup(
+        {.texture = tex, .sampler = m_defaultSampler});
+    m_decalCache.push_back({tex, group});
+    return group;
+}
+
+void MeshRenderer::renderDecals(rhi::ICommandList& cmd) {
+    if (m_decals.empty() || !m_unitCube.valid()) return;
+    VORTEX_PROFILE_ZONE("mesh.decals");
+
+    const GpuMesh& box = m_meshes[m_unitCube.index];
+
+    cmd.setPipeline(m_decalPipeline);
+    cmd.setBindGroup(1, m_uniformBindGroups[m_frame]);   // set 1: frame data
+    cmd.setBindGroup(2, m_sceneBindGroup);               // set 2: the G-buffer's depth
+    cmd.setVertexBuffer(0, box.vbo);
+    cmd.setIndexBuffer(box.ibo, rhi::IndexType::U32);
+
+    for (const Decal& d : m_decals) {
+        if (!d.texture.valid()) continue;
+
+        const Mat4& m   = d.model;
+        const Mat4  inv = m.inverse();
+
+        DecalPush pc;
+        pc.modelRow0 = {m.at(0, 0), m.at(0, 1), m.at(0, 2), m.at(0, 3)};
+        pc.modelRow1 = {m.at(1, 0), m.at(1, 1), m.at(1, 2), m.at(1, 3)};
+        pc.modelRow2 = {m.at(2, 0), m.at(2, 1), m.at(2, 2), m.at(2, 3)};
+        pc.invRow0   = {inv.at(0, 0), inv.at(0, 1), inv.at(0, 2), inv.at(0, 3)};
+        pc.invRow1   = {inv.at(1, 0), inv.at(1, 1), inv.at(1, 2), inv.at(1, 3)};
+        pc.invRow2   = {inv.at(2, 0), inv.at(2, 1), inv.at(2, 2), inv.at(2, 3)};
+        pc.params    = {d.opacity, d.angleFade, 0.0f, 0.0f};
+
+        cmd.setBindGroup(0, decalGroup(d.texture));
+        cmd.pushConstants(&pc, sizeof(DecalPush));
+        cmd.drawIndexed(box.indexCount);
+        ++m_drawCalls;
+    }
 }
 
 void MeshRenderer::classify() {
@@ -983,6 +1292,18 @@ void MeshRenderer::classify() {
     };
     std::sort(m_blended.begin(), m_blended.end(),
               [&](u32 a, u32 b) { return viewDepth(a) > viewDepth(b); });   // far -> near
+
+    // Per-instance data goes up once, before anything is recorded. An instance that did
+    // not say where it was last frame is treated as stationary, so its only motion comes
+    // from the camera — which is what a reprojection would have given anyway.
+    ensureInstanceCapacity(static_cast<u32>(m_instances.size()));
+    m_instanceData.resize(m_instances.size());
+    for (usize i = 0; i < m_instances.size(); ++i)
+        m_instanceData[i].prevModel = m_instances[i].hasPrevModel ? m_instances[i].prevModel
+                                                                  : m_instances[i].model;
+    if (!m_instanceData.empty())
+        m_device.updateBuffer(m_instanceBuffers[m_frame], m_instanceData.data(),
+                              m_instanceData.size() * sizeof(GpuInstance));
 }
 
 void MeshRenderer::drawList(rhi::ICommandList& cmd, const std::vector<u32>& list,
@@ -1011,7 +1332,7 @@ void MeshRenderer::drawList(rhi::ICommandList& cmd, const std::vector<u32>& list
                 cmd.setBindGroup(2, m_sceneBindGroup);
             bound = pipe;
         }
-        recordInstance(cmd, inst);
+        recordInstance(cmd, inst, i);
     }
 }
 
@@ -1022,6 +1343,14 @@ void MeshRenderer::end(rhi::ICommandList& cmd) {
     classify();
     drawList(cmd, m_opaque, {});
     drawList(cmd, m_blended, {});
+}
+
+void MeshRenderer::endOpaque(rhi::ICommandList& cmd) {
+    if (m_instances.empty()) return;
+    VORTEX_PROFILE_ZONE("mesh.opaque");
+
+    classify();
+    drawList(cmd, m_opaque, {});
 }
 
 // --- Deferred ---------------------------------------------------------------
@@ -1065,6 +1394,14 @@ void MeshRenderer::setGBuffer(rhi::TextureHandle albedo, rhi::TextureHandle norm
     m_gbufferDepth    = depth;
     m_aoMap           = m_white;
 
+    // Decals read the depth through the scene set, not the G-buffer set: their pipeline
+    // spends set 0 on the decal's own texture.
+    const rhi::TextureHandle nextDepth = depth.valid() ? depth : m_dummyShadow;
+    if (nextDepth != m_sceneDepth) {
+        m_sceneDepth = nextDepth;
+        rebuildSceneBindGroup();
+    }
+
     // Two groups over the same G-buffer: the SSAO pass must not have the AO map bound,
     // because that is the target it is writing.
     m_ssaoBindGroup    = gbufferGroup(m_white);
@@ -1098,11 +1435,6 @@ void MeshRenderer::renderSSAOBlur(rhi::ICommandList& cmd, rhi::BindGroupHandle r
     cmd.setBindGroup(0, rawAo);
     cmd.pushConstants(&push, sizeof(BlurPush));
     cmd.draw(3);
-}
-
-Mat4 MeshRenderer::reprojection() const {
-    if (!m_hasPrevFrame) return Mat4::identity();
-    return m_prevViewProj * m_deferredPush.invViewProj;
 }
 
 void MeshRenderer::renderDeferredLighting(rhi::ICommandList& cmd) {
