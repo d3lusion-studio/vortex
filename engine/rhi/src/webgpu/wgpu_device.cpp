@@ -605,18 +605,33 @@ PipelineHandle WebGPUDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
 
     // Fragment + colour target.
     WGPUBlendState blend{};
-    blend.color = {WGPUBlendOperation_Add, WGPUBlendFactor_SrcAlpha, WGPUBlendFactor_OneMinusSrcAlpha};
-    blend.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_OneMinusSrcAlpha};
-
-    WGPUBlendState additive{};
-    additive.color = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_One};
-    additive.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_One};
+    bool blended = true;
+    switch (effectiveBlend(desc)) {
+        case BlendMode::Opaque:
+            blended = false;
+            break;
+        case BlendMode::Alpha:
+            blend.color = {WGPUBlendOperation_Add, WGPUBlendFactor_SrcAlpha, WGPUBlendFactor_OneMinusSrcAlpha};
+            blend.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_OneMinusSrcAlpha};
+            break;
+        case BlendMode::Premultiplied:
+            blend.color = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_OneMinusSrcAlpha};
+            blend.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_OneMinusSrcAlpha};
+            break;
+        case BlendMode::Additive:
+            blend.color = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_One};
+            blend.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_One, WGPUBlendFactor_One};
+            break;
+        case BlendMode::Multiply:
+            blend.color = {WGPUBlendOperation_Add, WGPUBlendFactor_Dst, WGPUBlendFactor_Zero};
+            blend.alpha = {WGPUBlendOperation_Add, WGPUBlendFactor_DstAlpha, WGPUBlendFactor_Zero};
+            break;
+    }
 
     WGPUColorTargetState colorTarget = WGPU_COLOR_TARGET_STATE_INIT;
     colorTarget.format    = toWGPUFormat(desc.colorFormat);
     colorTarget.writeMask = WGPUColorWriteMask_All;
-    if (desc.additiveBlend)    colorTarget.blend = &additive;
-    else if (desc.alphaBlend)  colorTarget.blend = &blend;
+    if (blended) colorTarget.blend = &blend;
 
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module      = fs;

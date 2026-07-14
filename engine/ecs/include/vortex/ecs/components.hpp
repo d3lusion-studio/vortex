@@ -109,8 +109,13 @@ struct Transform3D {
 struct MeshComp {
     renderer::MeshHandle mesh;
     Vec4                 color{1.0f, 1.0f, 1.0f, 1.0f};
+    // Used only when `material` is unset — the quick path for an untextured surface.
     f32                  metallic  = 0.0f;
     f32                  roughness = 0.5f;
+
+    renderer::MaterialHandle material;
+    bool                     castsShadow    = true;
+    bool                     receivesShadow = true;
 };
 
 }

@@ -51,32 +51,38 @@ void transitionImage(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspe
 }
 
 void VulkanCommandList::beginRenderPass(const RenderPassDesc& desc) {
-    // A pass with no colour target is depth-only (e.g. the shadow map pass).
-    VulkanTexture* tex = m_device->getTexture(desc.color.target);
+    // A pass with no colour target is depth-only (e.g. the shadow map pass); a pass
+    // with several is a G-buffer fill.
+    const u32 colorCount = desc.colorCount();
 
-    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    if (tex) {
+    VkRenderingAttachmentInfo colors[1 + kMaxExtraColorAttachments]{};
+    for (u32 i = 0; i < colorCount; ++i) {
+        const ColorAttachment& att = (i == 0) ? desc.color : desc.extra[i - 1];
+        VulkanTexture* tex = m_device->getTexture(att.target);
+        if (!tex) continue;
+
         // LoadOp::Load must preserve existing contents, so keep the current layout
         // as the barrier source; a Clear/DontCare pass can discard from UNDEFINED.
-        const VkImageLayout oldLayout = desc.color.loadOp == LoadOp::Load
+        const VkImageLayout oldLayout = att.loadOp == LoadOp::Load
             ? tex->currentLayout : VK_IMAGE_LAYOUT_UNDEFINED;
         transitionImage(m_cmd, tex->image, VK_IMAGE_ASPECT_COLOR_BIT,
                         oldLayout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         tex->currentLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-        color.imageView   = tex->view;
-        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color.loadOp      = toVkLoadOp(desc.color.loadOp);
-        color.storeOp     = toVkStoreOp(desc.color.storeOp);
-        color.clearValue.color = {{desc.color.clearColor[0], desc.color.clearColor[1],
-                                   desc.color.clearColor[2], desc.color.clearColor[3]}};
+        colors[i].sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colors[i].imageView   = tex->view;
+        colors[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colors[i].loadOp      = toVkLoadOp(att.loadOp);
+        colors[i].storeOp     = toVkStoreOp(att.storeOp);
+        colors[i].clearValue.color = {{att.clearColor[0], att.clearColor[1],
+                                       att.clearColor[2], att.clearColor[3]}};
     }
 
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
     ri.renderArea           = {{0, 0}, {desc.width, desc.height}};
     ri.layerCount           = 1;
-    ri.colorAttachmentCount = tex ? 1u : 0u;
-    ri.pColorAttachments    = tex ? &color : nullptr;
+    ri.colorAttachmentCount = colorCount;
+    ri.pColorAttachments    = colorCount > 0 ? colors : nullptr;
 
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     VulkanTexture* depthTex = m_device->getTexture(desc.depth.target);

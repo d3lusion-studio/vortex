@@ -132,28 +132,41 @@ VulkanDevice::VulkanDevice(pf::IWindow& window) {
     uboLayoutCI.pBindings    = &uboBinding;
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &uboLayoutCI, nullptr, &m_uniformSetLayout));
 
-    // IBL set: irradiance cube (0), prefiltered env cube (1), shared sampler (2).
-    VkDescriptorSetLayoutBinding iblBindings[3]{};
-    iblBindings[0].binding        = 0;
-    iblBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    iblBindings[0].descriptorCount = 1;
-    iblBindings[0].stageFlags     = VK_SHADER_STAGE_FRAGMENT_BIT;
-    iblBindings[1].binding        = 1;
-    iblBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    iblBindings[1].descriptorCount = 1;
-    iblBindings[1].stageFlags     = VK_SHADER_STAGE_FRAGMENT_BIT;
-    iblBindings[2].binding        = 2;
-    iblBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    iblBindings[2].descriptorCount = 1;
-    iblBindings[2].stageFlags     = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo iblLayoutCI{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    iblLayoutCI.bindingCount = 3;
-    iblLayoutCI.pBindings    = iblBindings;
-    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &iblLayoutCI, nullptr, &m_iblSetLayout));
+    // Scene set: irradiance cube (0), environment cube (1), IBL sampler (2),
+    // shadow map (3), shadow sampler (4). The shadow map shares this set rather
+    // than owning one because the mesh pipeline needs all four sets it can get.
+    VkDescriptorSetLayoutBinding sceneBindings[5]{};
+    for (u32 i = 0; i < 5; ++i) {
+        sceneBindings[i].binding         = i;
+        sceneBindings[i].descriptorCount = 1;
+        sceneBindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        sceneBindings[i].descriptorType  = (i == 2 || i == 4)
+                                               ? VK_DESCRIPTOR_TYPE_SAMPLER
+                                               : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    }
+    VkDescriptorSetLayoutCreateInfo sceneLayoutCI{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    sceneLayoutCI.bindingCount = 5;
+    sceneLayoutCI.pBindings    = sceneBindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &sceneLayoutCI, nullptr, &m_sceneSetLayout));
+
+    // PBR material set: albedo (0), normal (1), metallic-roughness (2),
+    // emissive (3), occlusion (4), shared sampler (5).
+    VkDescriptorSetLayoutBinding pbrBindings[6]{};
+    for (u32 i = 0; i < 6; ++i) {
+        pbrBindings[i].binding         = i;
+        pbrBindings[i].descriptorCount = 1;
+        pbrBindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pbrBindings[i].descriptorType  = (i == 5) ? VK_DESCRIPTOR_TYPE_SAMPLER
+                                                  : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    }
+    VkDescriptorSetLayoutCreateInfo pbrLayoutCI{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    pbrLayoutCI.bindingCount = 6;
+    pbrLayoutCI.pBindings    = pbrBindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &pbrLayoutCI, nullptr, &m_pbrSetLayout));
 
     VkDescriptorPoolSize poolSizes[3]{
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
-        {VK_DESCRIPTOR_TYPE_SAMPLER,       1024},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4096},
+        {VK_DESCRIPTOR_TYPE_SAMPLER,       2048},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 256},
     };
     VkDescriptorPoolCreateInfo poolCI{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -218,7 +231,8 @@ VulkanDevice::~VulkanDevice() {
     vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(m_device, m_materialSetLayout, nullptr);
     vkDestroyDescriptorSetLayout(m_device, m_uniformSetLayout, nullptr);
-    vkDestroyDescriptorSetLayout(m_device, m_iblSetLayout, nullptr);
+    vkDestroyDescriptorSetLayout(m_device, m_sceneSetLayout, nullptr);
+    vkDestroyDescriptorSetLayout(m_device, m_pbrSetLayout, nullptr);
 
     if (m_timestampPool) vkDestroyQueryPool(m_device, m_timestampPool, nullptr);
 
@@ -359,6 +373,8 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc, const void* p
             usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if (hasFlag(desc.usage, TextureUsage::RenderTarget))
             usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        if (hasFlag(desc.usage, TextureUsage::CopySrc))
+            usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     }
 
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -442,6 +458,67 @@ void VulkanDevice::destroyTexture(TextureHandle h) {
         if (t->allocation) vmaDestroyImage(m_allocator, t->image, t->allocation);
         m_textures.destroy(h);
     }
+}
+
+void VulkanDevice::readTexture(TextureHandle h, void* dst) {
+    VulkanTexture* t = m_textures.get(h);
+    if (t == nullptr || dst == nullptr) return;
+
+    const u32 bpp = bytesPerPixel(t->rhiFormat);
+    if (bpp == 0u) return;
+
+    const VkDeviceSize bytes =
+        static_cast<VkDeviceSize>(t->extent.width) * t->extent.height * bpp;
+
+    // The image is almost certainly still being read or presented. There is no
+    // per-resource timeline here, so drain the device — this call is a stall by design.
+    waitIdle();
+
+    VkBufferCreateInfo sci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    sci.size  = bytes;
+    sci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo saci{};
+    saci.usage = VMA_MEMORY_USAGE_AUTO;
+    saci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                 VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VkBuffer          staging      = VK_NULL_HANDLE;
+    VmaAllocation     stagingAlloc = VK_NULL_HANDLE;
+    VmaAllocationInfo stagingInfo{};
+    VK_CHECK(vmaCreateBuffer(m_allocator, &sci, &saci, &staging, &stagingAlloc, &stagingInfo));
+
+    const VkImageLayout original = t->currentLayout;
+
+    immediateSubmit([&](VkCommandBuffer cmd) {
+        auto barrier = [&](VkImageLayout from, VkImageLayout to,
+                           VkAccessFlags srcAccess, VkAccessFlags dstAccess) {
+            VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            b.oldLayout        = from;
+            b.newLayout        = to;
+            b.image            = t->image;
+            b.subresourceRange = {t->aspect, 0, 1, 0, 1};
+            b.srcAccessMask    = srcAccess;
+            b.dstAccessMask    = dstAccess;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                                 0, nullptr, 0, nullptr, 1, &b);
+        };
+
+        barrier(original, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {t->aspect, 0, 0, 1};
+        copy.imageExtent      = {t->extent.width, t->extent.height, 1};
+        vkCmdCopyImageToBuffer(cmd, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               staging, 1, &copy);
+
+        // Put it back where it was, or the next frame's barrier reasons from a lie.
+        barrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, original,
+                VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
+    });
+
+    std::memcpy(dst, stagingInfo.pMappedData, bytes);
+    vmaDestroyBuffer(m_allocator, staging, stagingAlloc);
 }
 
 void VulkanDevice::updateTexture(TextureHandle h, const void* pixels,
@@ -546,39 +623,66 @@ void VulkanDevice::destroySampler(SamplerHandle h) {
 }
 
 BindGroupHandle VulkanDevice::createBindGroup(const BindGroupDesc& desc) {
-    // IBL bind group: irradiance cube (0), env cube (1), shared sampler (2).
-    if (desc.isIblSet) {
-        VulkanTexture* irr = m_textures.get(desc.irradiance);
-        VulkanTexture* env = m_textures.get(desc.envMap);
-        VulkanSampler* smp = m_samplers.get(desc.iblSampler);
-        VORTEX_ASSERT(irr && env && smp, "createBindGroup(IBL) with invalid handle");
-        if (!irr || !env || !smp) return {};
-
+    // Writes `count` image/sampler descriptors into one freshly allocated set.
+    // `images[i]` is null for a sampler binding, `samplers[i]` null for an image one.
+    auto makeImageSet = [&](VkDescriptorSetLayout layout, u32 count,
+                            VulkanTexture* const* images,
+                            VulkanSampler* const* samplers) -> BindGroupHandle {
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         ai.descriptorPool     = m_descriptorPool;
         ai.descriptorSetCount = 1;
-        ai.pSetLayouts        = &m_iblSetLayout;
+        ai.pSetLayouts        = &layout;
         VulkanBindGroup group{};
         VK_CHECK(vkAllocateDescriptorSets(m_device, &ai, &group.set));
 
-        VkDescriptorImageInfo irrInfo{VK_NULL_HANDLE, irr->view,
-                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkDescriptorImageInfo envInfo{VK_NULL_HANDLE, env->view,
-                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkDescriptorImageInfo smpInfo{smp->sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+        VkDescriptorImageInfo infos[8]{};
+        VkWriteDescriptorSet  writes[8]{};
+        for (u32 i = 0; i < count; ++i) {
+            const bool isSampler = samplers[i] != nullptr;
+            infos[i].imageView   = isSampler ? VK_NULL_HANDLE : images[i]->view;
+            infos[i].imageLayout = isSampler ? VK_IMAGE_LAYOUT_UNDEFINED
+                                             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            infos[i].sampler     = isSampler ? samplers[i]->sampler : VK_NULL_HANDLE;
 
-        VkWriteDescriptorSet writes[3]{};
-        for (u32 i = 0; i < 3; ++i) {
-            writes[i].sType          = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[i].dstSet         = group.set;
-            writes[i].dstBinding     = i;
+            writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet          = group.set;
+            writes[i].dstBinding      = i;
             writes[i].descriptorCount = 1;
+            writes[i].descriptorType  = isSampler ? VK_DESCRIPTOR_TYPE_SAMPLER
+                                                  : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            writes[i].pImageInfo      = &infos[i];
         }
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; writes[0].pImageInfo = &irrInfo;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; writes[1].pImageInfo = &envInfo;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;       writes[2].pImageInfo = &smpInfo;
-        vkUpdateDescriptorSets(m_device, 3, writes, 0, nullptr);
+        vkUpdateDescriptorSets(m_device, count, writes, 0, nullptr);
         return m_bindGroups.create(group);
+    };
+
+    // Scene set: irradiance (0), env (1), IBL sampler (2), shadow map (3), shadow sampler (4).
+    if (desc.isSceneSet) {
+        VulkanTexture* imgs[5] = {m_textures.get(desc.irradiance), m_textures.get(desc.envMap),
+                                  nullptr, m_textures.get(desc.shadowMap), nullptr};
+        VulkanSampler* smps[5] = {nullptr, nullptr, m_samplers.get(desc.iblSampler),
+                                  nullptr, m_samplers.get(desc.shadowSampler)};
+        for (u32 i = 0; i < 5; ++i) {
+            VORTEX_ASSERT(imgs[i] || smps[i], "createBindGroup(scene) with invalid handle");
+            if (!imgs[i] && !smps[i]) return {};
+        }
+        return makeImageSet(m_sceneSetLayout, 5, imgs, smps);
+    }
+
+    // PBR material set: albedo (0), normal (1), metallic-roughness (2),
+    // emissive (3), occlusion (4), sampler (5).
+    if (desc.isPbrMaterialSet) {
+        VulkanTexture* imgs[6] = {
+            m_textures.get(desc.albedo), m_textures.get(desc.normalMap),
+            m_textures.get(desc.metallicRoughness), m_textures.get(desc.emissive),
+            m_textures.get(desc.occlusion), nullptr};
+        VulkanSampler* smps[6] = {nullptr, nullptr, nullptr, nullptr, nullptr,
+                                  m_samplers.get(desc.materialSampler)};
+        for (u32 i = 0; i < 6; ++i) {
+            VORTEX_ASSERT(imgs[i] || smps[i], "createBindGroup(PBR) with invalid handle");
+            if (!imgs[i] && !smps[i]) return {};
+        }
+        return makeImageSet(m_pbrSetLayout, 6, imgs, smps);
     }
 
     // Uniform-buffer bind group: single UBO at binding 0.
@@ -710,25 +814,55 @@ PipelineHandle VulkanDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
 
     // A colorFormat of Undefined means this is a depth-only pipeline (e.g. the
     // shadow pass): no colour attachment, no colour blend state.
-    const bool depthOnly = desc.colorFormat == Format::Undefined;
 
     VkPipelineColorBlendAttachmentState cba{};
     cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    cba.blendEnable = (desc.alphaBlend || desc.additiveBlend) ? VK_TRUE : VK_FALSE;
-    cba.srcColorBlendFactor = desc.additiveBlend ? VK_BLEND_FACTOR_ONE
-                                                 : VK_BLEND_FACTOR_SRC_ALPHA;
-    cba.dstColorBlendFactor = desc.additiveBlend ? VK_BLEND_FACTOR_ONE
-                                                 : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    cba.colorBlendOp        = VK_BLEND_OP_ADD;
-    cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    cba.dstAlphaBlendFactor = desc.additiveBlend ? VK_BLEND_FACTOR_ONE
-                                                 : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    cba.alphaBlendOp        = VK_BLEND_OP_ADD;
+    cba.colorBlendOp = VK_BLEND_OP_ADD;
+    cba.alphaBlendOp = VK_BLEND_OP_ADD;
+    switch (effectiveBlend(desc)) {
+        case BlendMode::Opaque:
+            cba.blendEnable = VK_FALSE;
+            break;
+        case BlendMode::Alpha:
+            cba.blendEnable         = VK_TRUE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            break;
+        case BlendMode::Premultiplied:
+            cba.blendEnable         = VK_TRUE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            break;
+        case BlendMode::Additive:
+            cba.blendEnable         = VK_TRUE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            break;
+        case BlendMode::Multiply:
+            cba.blendEnable         = VK_TRUE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+            cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
+            cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+            break;
+    }
+
+    // Every attachment of a G-buffer gets the same blend state; a deferred fill is
+    // opaque anyway, and Vulkan requires one entry per attachment regardless.
+    const u32 colorCount = colorAttachmentCount(desc);
+    VkPipelineColorBlendAttachmentState cbas[1 + kMaxExtraColorAttachments];
+    for (u32 i = 0; i < colorCount; ++i) cbas[i] = cba;
 
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = depthOnly ? 0u : 1u;
-    cb.pAttachments    = depthOnly ? nullptr : &cba;
+    cb.attachmentCount = colorCount;
+    cb.pAttachments    = colorCount > 0 ? cbas : nullptr;
 
     VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     dss.depthTestEnable  = desc.depthTest  ? VK_TRUE : VK_FALSE;
@@ -745,13 +879,15 @@ PipelineHandle VulkanDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     pushRange.offset     = 0;
     pushRange.size       = desc.pushConstantSize;
 
-    // Set layouts, in binding order: material set, uniform set, then IBL set
-    // (each only if requested). A pipeline with only one uses set 0.
+    // Set layouts, in binding order: material set (plain or PBR), uniform set, then
+    // scene set — each only if requested. A pipeline with only one uses set 0, so the
+    // set index a shader declares depends on which of these its pipeline asked for.
     VkDescriptorSetLayout setLayouts[3];
     u32 setLayoutCount = 0;
-    if (desc.hasMaterialTexture) setLayouts[setLayoutCount++] = m_materialSetLayout;
-    if (desc.hasUniformBuffer)   setLayouts[setLayoutCount++] = m_uniformSetLayout;
-    if (desc.hasIblTextures)     setLayouts[setLayoutCount++] = m_iblSetLayout;
+    if (desc.hasPbrMaterial)          setLayouts[setLayoutCount++] = m_pbrSetLayout;
+    else if (desc.hasMaterialTexture) setLayouts[setLayoutCount++] = m_materialSetLayout;
+    if (desc.hasUniformBuffer)        setLayouts[setLayoutCount++] = m_uniformSetLayout;
+    if (desc.hasSceneTextures)        setLayouts[setLayoutCount++] = m_sceneSetLayout;
 
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     if (setLayoutCount > 0) {
@@ -765,10 +901,13 @@ PipelineHandle VulkanDevice::createGraphicsPipeline(const GraphicsPipelineDesc& 
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VK_CHECK(vkCreatePipelineLayout(m_device, &lci, nullptr, &layout));
 
-    VkFormat colorFormat = toVkFormat(desc.colorFormat);
+    VkFormat colorFormats[1 + kMaxExtraColorAttachments]{};
+    for (u32 i = 0; i < colorCount; ++i)
+        colorFormats[i] = toVkFormat(i == 0 ? desc.colorFormat : desc.extraColorFormats[i - 1]);
+
     VkPipelineRenderingCreateInfo rci{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rci.colorAttachmentCount    = depthOnly ? 0u : 1u;
-    rci.pColorAttachmentFormats = depthOnly ? nullptr : &colorFormat;
+    rci.colorAttachmentCount    = colorCount;
+    rci.pColorAttachmentFormats = colorCount > 0 ? colorFormats : nullptr;
     if (desc.depthFormat != Format::Undefined)
         rci.depthAttachmentFormat = toVkFormat(desc.depthFormat);
 

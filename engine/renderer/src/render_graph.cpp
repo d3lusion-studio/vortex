@@ -135,9 +135,11 @@ void RenderGraph::PassBuilder::sample(ResourceId id) { m_pass.samples.push_back(
 
 void RenderGraph::PassBuilder::writeColor(ResourceId id, const f32 clearColor[4],
                                           rhi::LoadOp loadOp) {
-    m_pass.colorWrite = id;
-    m_pass.colorLoadOp = loadOp;
-    for (int i = 0; i < 4; ++i) m_pass.clearColor[i] = clearColor[i];
+    if (m_pass.colorCount >= kMaxColorWrites) return;
+    ColorWrite& cw = m_pass.colors[m_pass.colorCount++];
+    cw.id     = id;
+    cw.loadOp = loadOp;
+    for (int i = 0; i < 4; ++i) cw.clearColor[i] = clearColor[i];
 }
 
 void RenderGraph::PassBuilder::writeDepth(ResourceId id, f32 clearDepth, rhi::LoadOp loadOp) {
@@ -168,18 +170,26 @@ void RenderGraph::execute(rhi::ICommandList& cmd) {
             }
         }
 
-        const bool hasColor = pass.colorWrite != kInvalid && pass.colorWrite < m_resources.size();
+        u32 colorCount = 0;
+        for (u32 i = 0; i < pass.colorCount; ++i)
+            if (pass.colors[i].id < m_resources.size()) ++colorCount;
+
+        const bool hasColor = colorCount > 0;
         const bool hasDepth = pass.depthWrite != kInvalid && pass.depthWrite < m_resources.size();
         if (!hasColor && !hasDepth) continue;   // nothing to render into
 
         rhi::RenderPassDesc pd{};
-        if (hasColor) {
-            const Resource& cw = m_resources[pass.colorWrite];
-            pd.color.target = texture(pass.colorWrite);
-            pd.color.loadOp = pass.colorLoadOp;
-            for (int i = 0; i < 4; ++i) pd.color.clearColor[i] = pass.clearColor[i];
-            pd.width  = cw.width;
-            pd.height = cw.height;
+        for (u32 i = 0; i < colorCount; ++i) {
+            const ColorWrite& src = pass.colors[i];
+            rhi::ColorAttachment& att = (i == 0) ? pd.color : pd.extra[i - 1];
+            att.target = texture(src.id);
+            att.loadOp = src.loadOp;
+            for (int c = 0; c < 4; ++c) att.clearColor[c] = src.clearColor[c];
+            if (i == 0) {
+                const Resource& res = m_resources[src.id];
+                pd.width  = res.width;
+                pd.height = res.height;
+            }
         }
 
         if (hasDepth) {
@@ -196,7 +206,8 @@ void RenderGraph::execute(rhi::ICommandList& cmd) {
         cmd.endRenderPass();
 
         // Record the post-pass states so a later sample triggers a barrier.
-        if (hasColor) m_resources[pass.colorWrite].state = rhi::ResourceState::RenderTarget;
+        for (u32 i = 0; i < colorCount; ++i)
+            m_resources[pass.colors[i].id].state = rhi::ResourceState::RenderTarget;
         if (hasDepth) m_resources[pass.depthWrite].state = rhi::ResourceState::DepthTarget;
     }
 }

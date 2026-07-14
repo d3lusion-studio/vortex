@@ -45,12 +45,27 @@ struct BindGroupDesc {
     BufferHandle  uniformBuffer{};
     u64           uniformSize = 0;
 
-    // Image-based-lighting set: two cubemaps (irradiance + prefiltered env)
-    // sharing one sampler. Selected when isIblSet is true.
-    bool          isIblSet = false;
+    // Scene set: everything the lit pass needs about the world rather than about
+    // the surface — the two IBL cubemaps (irradiance + environment) and the shadow
+    // map. They live in one set because a 3D pipeline only gets four, and the
+    // fourth is spent emulating push constants on WebGPU. Selected by isSceneSet.
+    bool          isSceneSet = false;
     TextureHandle irradiance{};
     TextureHandle envMap{};
     SamplerHandle iblSampler{};
+    TextureHandle shadowMap{};
+    SamplerHandle shadowSampler{};
+
+    // PBR material set: the five maps of a metallic-roughness material, sharing
+    // one sampler. Any handle left invalid must be filled by the caller with a
+    // 1x1 neutral texture — the shader always samples all five.
+    bool          isPbrMaterialSet = false;
+    TextureHandle albedo{};
+    TextureHandle normalMap{};
+    TextureHandle metallicRoughness{};
+    TextureHandle emissive{};
+    TextureHandle occlusion{};
+    SamplerHandle materialSampler{};
 };
 
 struct SwapchainDesc {
@@ -75,6 +90,11 @@ struct VertexLayout {
     bool perInstance = false;
 };
 
+// A G-buffer needs several colour targets written in one pass. Attachment 0 is the
+// familiar single target; the `extra` slots hold attachments 1..N, and a slot counts
+// only while it is filled, so an ordinary single-target pass ignores them entirely.
+inline constexpr u32 kMaxExtraColorAttachments = 3;
+
 struct GraphicsPipelineDesc {
     // Every pipeline carries its shaders in both languages: Vulkan consumes the SPIR-V, WebGPU
     // consumes the WGSL (browsers accept nothing else). The generated shader headers provide
@@ -88,11 +108,19 @@ struct GraphicsPipelineDesc {
     PrimitiveTopology      topology    = PrimitiveTopology::TriangleList;
     CullMode               cull        = CullMode::None;
     Format                 colorFormat = Format::B8G8R8A8_UNORM;  // Undefined => depth-only pass
+    // Formats of colour attachments 1..N, for a pipeline that writes a G-buffer.
+    // Must line up with the RenderPassDesc the pipeline is used in.
+    Format                 extraColorFormats[kMaxExtraColorAttachments] = {
+        Format::Undefined, Format::Undefined, Format::Undefined};
     bool                   alphaBlend  = false;  // straight-alpha blending for sprites
     bool                   additiveBlend = false;  // src + dst; used for bloom composite/particles
+    // Supersedes the two bools above when set to anything but Opaque. The bools stay
+    // because most 2D pipelines only ever need those two modes and read better that way.
+    BlendMode              blendMode   = BlendMode::Opaque;
     bool                   hasMaterialTexture = false;  // a set: sampled image + sampler
     bool                   hasUniformBuffer   = false;  // a set: single uniform buffer (vtx+frag)
-    bool                   hasIblTextures     = false;  // a set: irradiance + env cubemaps
+    bool                   hasSceneTextures   = false;  // a set: IBL cubemaps + shadow map
+    bool                   hasPbrMaterial     = false;  // a set: the five PBR maps + sampler
     u32                    pushConstantSize   = 0;       // vertex-stage push constant block bytes
     bool                   depthTest    = false;
     bool                   depthWrite   = false;
@@ -102,6 +130,22 @@ struct GraphicsPipelineDesc {
                                               // Targets/resolve attachments are future work.
     const char*            debugName   = nullptr;
 };
+
+// How many colour attachments a pipeline writes (attachment 0 plus any extras).
+[[nodiscard]] inline u32 colorAttachmentCount(const GraphicsPipelineDesc& d) noexcept {
+    if (d.colorFormat == Format::Undefined) return 0;
+    u32 n = 1;
+    while (n <= kMaxExtraColorAttachments && d.extraColorFormats[n - 1] != Format::Undefined) ++n;
+    return n;
+}
+
+// The one blend mode a pipeline actually gets, folding the legacy bools into the enum.
+[[nodiscard]] inline BlendMode effectiveBlend(const GraphicsPipelineDesc& d) noexcept {
+    if (d.blendMode != BlendMode::Opaque) return d.blendMode;
+    if (d.additiveBlend) return BlendMode::Additive;
+    if (d.alphaBlend)    return BlendMode::Alpha;
+    return BlendMode::Opaque;
+}
 
 struct Viewport {
     f32 x = 0, y = 0;
@@ -134,10 +178,18 @@ struct DepthAttachment {
 
 struct RenderPassDesc {
     ColorAttachment color;
+    ColorAttachment extra[kMaxExtraColorAttachments];
     DepthAttachment depth;
     u32             width  = 0;
     u32             height = 0;
     bool            secondaryContents = false;
+
+    [[nodiscard]] u32 colorCount() const noexcept {
+        if (!color.target.valid()) return 0;
+        u32 n = 1;
+        while (n <= kMaxExtraColorAttachments && extra[n - 1].target.valid()) ++n;
+        return n;
+    }
 };
 
 struct FrameContext {

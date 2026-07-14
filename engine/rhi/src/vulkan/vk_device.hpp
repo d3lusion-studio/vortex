@@ -33,6 +33,7 @@ public:
     void destroyTexture(TextureHandle) override;
     void updateTexture(TextureHandle, const void* pixels,
                        u32 x, u32 y, u32 width, u32 height) override;
+    void readTexture(TextureHandle, void* dst) override;
 
     [[nodiscard]] SamplerHandle createSampler(const SamplerDesc&) override;
     void destroySampler(SamplerHandle) override;
@@ -85,7 +86,8 @@ private:
     VkDescriptorPool         m_descriptorPool   = VK_NULL_HANDLE;
     VkDescriptorSetLayout    m_materialSetLayout = VK_NULL_HANDLE;  // set 0: combined image sampler
     VkDescriptorSetLayout    m_uniformSetLayout  = VK_NULL_HANDLE;  // a set: single uniform buffer
-    VkDescriptorSetLayout    m_iblSetLayout      = VK_NULL_HANDLE;  // a set: 2 cubemaps + sampler
+    VkDescriptorSetLayout    m_sceneSetLayout    = VK_NULL_HANDLE;  // a set: 2 cubemaps + shadow map
+    VkDescriptorSetLayout    m_pbrSetLayout      = VK_NULL_HANDLE;  // a set: 5 PBR maps + sampler
 
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue  = VK_NULL_HANDLE;

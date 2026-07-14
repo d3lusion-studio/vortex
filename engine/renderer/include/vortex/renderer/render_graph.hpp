@@ -2,6 +2,7 @@
 #include "vortex/core/types.hpp"
 #include "vortex/rhi/rhi_enums.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
+#include "vortex/rhi/rhi_types.hpp"
 
 #include <functional>
 #include <string>
@@ -18,13 +19,21 @@ public:
 
     using ExecuteFn = std::function<void(rhi::ICommandList&)>;
 
+    static constexpr u32 kMaxColorWrites = 1 + rhi::kMaxExtraColorAttachments;
+
+    // One colour target a pass writes. A pass with several is filling a G-buffer.
+    struct ColorWrite {
+        ResourceId  id            = kInvalid;
+        f32         clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        rhi::LoadOp loadOp        = rhi::LoadOp::Clear;
+    };
+
     // One graph node: what it samples, what it writes, and how to record it.
     struct Pass {
         std::string             name;
         std::vector<ResourceId> samples;
-        ResourceId  colorWrite    = kInvalid;
-        f32         clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-        rhi::LoadOp colorLoadOp   = rhi::LoadOp::Clear;
+        ColorWrite  colors[kMaxColorWrites];
+        u32         colorCount    = 0;
         ResourceId  depthWrite    = kInvalid;
         f32         clearDepth    = 1.0f;
         rhi::LoadOp depthLoadOp   = rhi::LoadOp::Clear;
@@ -55,6 +64,8 @@ public:
     class PassBuilder {
     public:
         void sample(ResourceId);                                  // shader-read input
+        // Each call adds the next colour attachment, so calling it more than once
+        // declares a multi-target (G-buffer) pass, in attachment order.
         void writeColor(ResourceId, const f32 clearColor[4],
                         rhi::LoadOp loadOp = rhi::LoadOp::Clear);
         void writeDepth(ResourceId, f32 clearDepth = 1.0f,

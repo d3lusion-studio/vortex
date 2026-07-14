@@ -11,6 +11,7 @@
 #include "composite_frag_spv.h"
 #include "tonemap_frag_spv.h"
 #include "fxaa_frag_spv.h"
+#include "motion_blur_frag_spv.h"
 
 #include <cstring>
 
@@ -24,7 +25,14 @@ std::vector<std::byte> toBytes(const unsigned char* data, unsigned long size) {
     return out;
 }
 
-struct PostPush { f32 v[4]; };
+// Two vec4s: enough for the widest consumer (tone map, which also carries the grade).
+// The other passes fill only the first slots and leave the rest zeroed.
+struct PostPush { f32 v[8]; };
+
+struct MotionPush {
+    Mat4 reprojection;
+    Vec4 params;   // strength, samples, max velocity, unused
+};
 
 // A fullscreen post pipeline: no vertex buffer, samples one texture at set 0.
 rhi::PipelineHandle makeFullscreen(rhi::IGraphicsDevice& device,
@@ -65,15 +73,86 @@ PostProcess::PostProcess(rhi::IGraphicsDevice& device, rhi::Format hdrFormat,
     m_fxaa      = makeFullscreen(device, fxaa_frag_spv, fxaa_frag_spv_size,
                                  fxaa_frag_spv_wgsl,
                                  outputFormat, false, "fxaa");
+
+    rhi::GraphicsPipelineDesc md;
+    md.vertexSpirv      = toBytes(fullscreen_vert_spv, fullscreen_vert_spv_size);
+    md.fragmentSpirv    = toBytes(motion_blur_frag_spv, motion_blur_frag_spv_size);
+    md.vertexWgsl       = fullscreen_vert_spv_wgsl;
+    md.fragmentWgsl     = motion_blur_frag_spv_wgsl;
+    md.colorFormat      = hdrFormat;
+    md.hasPbrMaterial   = true;    // set 0: scene colour + depth
+    md.pushConstantSize = sizeof(MotionPush);
+    md.debugName        = "motion_blur";
+    m_motionBlur = device.createGraphicsPipeline(md);
+
+    const u8 white[4] = {255, 255, 255, 255};
+    m_white = device.createTexture({.width = 1, .height = 1,
+                                    .format = rhi::Format::R8G8B8A8_UNORM,
+                                    .debugName = "post_white"}, white);
+    m_sampler = device.createSampler({.minFilter = rhi::Filter::Linear,
+                                      .magFilter = rhi::Filter::Linear,
+                                      .addressU  = rhi::AddressMode::ClampToEdge,
+                                      .addressV  = rhi::AddressMode::ClampToEdge});
 }
 
 PostProcess::~PostProcess() {
     m_device.waitIdle();
+    for (const MotionCache& mc : m_motionCache) m_device.destroyBindGroup(mc.group);
+    m_device.destroySampler(m_sampler);
+    m_device.destroyTexture(m_white);
+    m_device.destroyPipeline(m_motionBlur);
     m_device.destroyPipeline(m_fxaa);
     m_device.destroyPipeline(m_tonemap);
     m_device.destroyPipeline(m_composite);
     m_device.destroyPipeline(m_blur);
     m_device.destroyPipeline(m_bright);
+}
+
+RenderGraph::ResourceId PostProcess::addMotionBlur(
+    RenderGraph& graph, RenderGraph::ResourceId sceneHdr, RenderGraph::ResourceId depth,
+    u32 width, u32 height, const Mat4& reprojection, f32 strength, u32 samples) {
+
+    const rhi::TextureHandle sceneTex = graph.texture(sceneHdr);
+    const rhi::TextureHandle depthTex = graph.texture(depth);
+    if (!sceneTex.valid() || !depthTex.valid() || samples < 2) return sceneHdr;
+
+    rhi::BindGroupHandle input{};
+    for (const MotionCache& mc : m_motionCache)
+        if (mc.scene == sceneTex && mc.depth == depthTex) { input = mc.group; break; }
+    if (!input.valid()) {
+        input = m_device.createBindGroup({.isPbrMaterialSet  = true,
+                                          .albedo            = sceneTex,
+                                          .normalMap         = depthTex,
+                                          .metallicRoughness = m_white,
+                                          .emissive          = m_white,
+                                          .occlusion         = m_white,
+                                          .materialSampler   = m_sampler});
+        m_motionCache.push_back({sceneTex, depthTex, input});
+    }
+
+    const auto blurred = graph.colorTarget("motion_blur", width, height, m_hdrFormat);
+    const f32  black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    graph.addPass("motion_blur",
+        [&](RenderGraph::PassBuilder& b) {
+            b.sample(sceneHdr);
+            b.sample(depth);
+            b.writeColor(blurred, black);
+        },
+        [this, input, width, height, reprojection, strength, samples](rhi::ICommandList& cmd) {
+            const MotionPush push{reprojection,
+                                  {strength, static_cast<f32>(samples), 0.1f, 0.0f}};
+            cmd.setViewport({.x = 0.0f, .y = 0.0f,
+                             .width = static_cast<f32>(width),
+                             .height = static_cast<f32>(height)});
+            cmd.setScissor(0, 0, width, height);
+            cmd.setPipeline(m_motionBlur);
+            cmd.setBindGroup(0, input);
+            cmd.pushConstants(&push, sizeof(MotionPush));
+            cmd.draw(3);
+        });
+
+    return blurred;
 }
 
 void PostProcess::addPasses(RenderGraph& graph, RenderGraph::ResourceId sceneHdr,
@@ -142,7 +221,8 @@ void PostProcess::addPasses(RenderGraph& graph, RenderGraph::ResourceId sceneHdr
         [&](RenderGraph::PassBuilder& b) { b.sample(sceneHdr); b.writeColor(ldrTarget, black); },
         [this, &graph, fullscreen, sceneHdr, ldrTarget, width, height, s](rhi::ICommandList& cmd) {
             fullscreen(cmd, m_tonemap, graph.sampledBindGroup(sceneHdr), width, height,
-                       {{s.exposure, 0, 0, 0}});
+                       {{s.exposure, static_cast<f32>(s.toneMapper), s.contrast, s.saturation,
+                         s.colorFilter.x, s.colorFilter.y, s.colorFilter.z, s.gamma}});
         });
 
     if (s.fxaa) {

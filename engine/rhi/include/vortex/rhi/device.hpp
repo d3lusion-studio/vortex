@@ -37,6 +37,14 @@ public:
     virtual void updateTexture(TextureHandle, const void* pixels,
                                u32 x, u32 y, u32 width, u32 height) = 0;
 
+    // Pull a rendered colour texture back to the CPU. `dst` receives width * height
+    // pixels in the texture's own format, tightly packed. The texture must carry
+    // TextureUsage::CopySrc (swapchain backbuffers always do).
+    //
+    // This is a full stall: it waits for the GPU to go idle, copies, and maps. It is
+    // for screenshots, image export and render tests — never for a per-frame path.
+    virtual void readTexture(TextureHandle, void* dst) = 0;
+
     [[nodiscard]] virtual SamplerHandle createSampler(const SamplerDesc&) = 0;
     virtual void destroySampler(SamplerHandle) = 0;
 

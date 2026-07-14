@@ -28,7 +28,10 @@ void VulkanSwapchain::build() {
            // reason to ask for the format rather than to pow() in a shader.
            .set_desired_format(VkSurfaceFormatKHR{VK_FORMAT_B8G8R8A8_SRGB,
                                                   VK_COLOR_SPACE_SRGB_NONLINEAR_KHR})
-           .add_image_usage_flags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+           // TRANSFER_SRC so readTexture() can pull the presented frame back for a
+           // screenshot or an image-comparison test.
+           .add_image_usage_flags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 
     auto ret = builder.build();
     if (!ret) {
@@ -55,6 +58,9 @@ void VulkanSwapchain::build() {
         tex.image            = image;
         tex.view             = view;
         tex.format           = m_vkFormat;
+        // Without this the backbuffer has no known pixel pitch, and anything that
+        // needs one — readTexture() — silently does nothing.
+        tex.rhiFormat        = fromVkFormat(m_vkFormat);
         tex.extent           = m_extent;
         tex.currentLayout    = VK_IMAGE_LAYOUT_UNDEFINED;
         tex.isSwapchainImage = true;

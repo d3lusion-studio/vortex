@@ -54,6 +54,17 @@ enum class VertexFormat { Float1, Float2, Float3, Float4, UNorm4x8, UInt1 };
 
 enum class CullMode { None, Front, Back };
 
+// How a pipeline's fragment output is combined with what is already in the target.
+// `Opaque` writes over it; the rest are the blends a 3D scene needs for glass,
+// glow and shadow-like darkening.
+enum class BlendMode {
+    Opaque,         // no blending
+    Alpha,          // src.a * src + (1 - src.a) * dst  — straight alpha
+    Premultiplied,  // src + (1 - src.a) * dst
+    Additive,       // src + dst — fire, glow, bloom composite
+    Multiply,       // src * dst — tint/darken
+};
+
 enum class TextureUsage : u32 {
     Sampled      = 1u << 0,
     RenderTarget = 1u << 1,
@@ -61,6 +72,9 @@ enum class TextureUsage : u32 {
     // Writable by updateTexture() after creation. A texture created with initial
     // pixels gets this implicitly; one that is written later must ask for it.
     CopyDst      = 1u << 3,
+    // Readable by readTexture(). Needed to pull rendered pixels back to the CPU —
+    // screenshots, image export, and comparing a render against a reference.
+    CopySrc      = 1u << 4,
 };
 
 [[nodiscard]] constexpr TextureUsage operator|(TextureUsage a, TextureUsage b) noexcept {

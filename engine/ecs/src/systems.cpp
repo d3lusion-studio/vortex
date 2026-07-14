@@ -144,7 +144,10 @@ void extractMeshes(Registry& registry, std::vector<renderer::MeshInstance>& out)
                                t.rotation.toMat4() *
                                Mat4::scaling(t.scale.x, t.scale.y, t.scale.z);
             out.push_back({.mesh = mesh.mesh, .model = model, .color = mesh.color,
-                           .metallic = mesh.metallic, .roughness = mesh.roughness});
+                           .metallic = mesh.metallic, .roughness = mesh.roughness,
+                           .material = mesh.material,
+                           .castsShadow = mesh.castsShadow,
+                           .receivesShadow = mesh.receivesShadow});
         });
 }
 
