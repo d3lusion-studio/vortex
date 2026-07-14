@@ -1,10 +1,12 @@
 #pragma once
-#include "vortex/asset/texture_asset.hpp"
-#include "vortex/core/string_id.hpp"
+#include "vortex/asset/asset_loader.hpp"
+#include "vortex/asset/asset_types.hpp"
 #include "vortex/core/types.hpp"
 
+#include <memory>
+#include <span>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <vector>
 
 namespace vortex::rhi { class IGraphicsDevice; }
@@ -12,62 +14,217 @@ namespace vortex::pf  { class IFileSystem; }
 
 namespace vortex::assets {
 
+namespace detail {
+// A small integer per asset type, handed out in first-use order. It is what lets one manager hold
+// a dozen unrelated asset types without knowing a single one of them at compile time.
+u32 nextAssetTypeId();
+
+template <typename T>
+u32 assetTypeId() {
+    static const u32 id = nextAssetTypeId();
+    return id;
+}
+}
+
+// Loads, caches, hot-reloads and hands out every asset in the game.
+//
+// Three things it deliberately is NOT:
+//
+//  - Not synchronous. load() returns a valid handle immediately and the file is read on an IO
+//    thread; get() returns null until it lands. A loading screen with a real progress bar is only
+//    possible because of this, and so is a game that does not hitch when it walks into a new area.
+//
+//  - Not on the job system. Reading a file BLOCKS, and the job system is a fixed pool sized for
+//    CPU-bound work — parking its threads on disk IO would starve every parallelFor in the engine
+//    behind a texture. Asset IO gets threads of its own.
+//
+//  - Not texture-aware. The texture loader is registered like any other, and a game can register
+//    its own for a format the engine has never heard of.
 class AssetManager {
 public:
-    AssetManager(rhi::IGraphicsDevice& device, pf::IFileSystem& fs);
+    AssetManager(rhi::IGraphicsDevice& device, pf::IFileSystem& fs, u32 ioThreads = 2);
     ~AssetManager();
 
     AssetManager(const AssetManager&)            = delete;
     AssetManager& operator=(const AssetManager&) = delete;
 
-    [[nodiscard]] TextureHandle loadTexture(const char* path);
+    // A load in flight, as an untyped id. This is what a barrier holds: a loading screen does not
+    // care whether it is waiting on a texture or a model, only on how many are left.
+    struct Id {
+        u32 index      = 0xFFFFFFFFu;
+        u32 generation = 0;
+        u32 type       = 0;
+        [[nodiscard]] bool valid() const { return index != 0xFFFFFFFFu; }
+    };
 
-    // Resolve a handle to its data, or nullptr if it is stale/invalid.
-    [[nodiscard]] const TextureAsset* get(TextureHandle handle) const;
+    // --- Loaders -----------------------------------------------------------
 
-    // Convenience: the current GPU texture for a handle (invalid if stale).
-    [[nodiscard]] rhi::TextureHandle gpuTexture(TextureHandle handle) const;
+    // Teach the manager a type. For a path of that type, every loader is asked canLoad() in
+    // registration order, and the first to claim it gets it.
+    template <typename T>
+    void addLoader(std::unique_ptr<IAssetLoader> loader) {
+        registerLoader(detail::assetTypeId<T>(), std::move(loader));
+    }
 
-    // The source path a GPU texture came from, or empty for one this manager did not
-    // load (a procedurally created texture, say). This is what lets a scene file name
-    // a texture instead of storing a handle that means nothing on the next run.
-    [[nodiscard]] std::string pathOf(rhi::TextureHandle gpu) const;
+    // --- Loading -----------------------------------------------------------
 
-    void unload(TextureHandle handle);
+    // Returns immediately. The HANDLE is valid at once; the ASSET is not there yet — check
+    // isLoaded(), or call get() and handle the null. Loading the same path twice returns the same
+    // handle rather than reading the file twice.
+    template <typename T>
+    [[nodiscard]] AssetHandle<T> load(const char* path, const LoadOptions& options = {}) {
+        const Id id = loadUntyped(detail::assetTypeId<T>(), path, options);
+        return {.index = id.index, .generation = id.generation};
+    }
 
-    void beginFrame();
+    // Read and decode right here, on this thread. For a startup asset the game cannot begin
+    // without — and for nothing else, because it stalls whatever thread calls it.
+    template <typename T>
+    [[nodiscard]] AssetHandle<T> loadBlocking(const char* path, const LoadOptions& options = {}) {
+        const Id id = loadUntyped(detail::assetTypeId<T>(), path, options);
+        waitFor(std::span<const Id>(&id, 1));
+        return {.index = id.index, .generation = id.generation};
+    }
+
+    // Hand the manager an asset that was never on disk — a texture generated at runtime, a mesh
+    // built in code. It gets a handle, a name, and every service a loaded asset gets: caching,
+    // lookup by name, a place in a saved scene. Without this, a generated asset is a raw GPU handle
+    // that nothing can refer to and no save file can survive.
+    template <typename T>
+    AssetHandle<T> insert(std::string_view name, std::shared_ptr<T> asset) {
+        const Id id = insertUntyped(detail::assetTypeId<T>(), name,
+                                    std::static_pointer_cast<void>(std::move(asset)));
+        return {.index = id.index, .generation = id.generation};
+    }
+
+    // --- Embedded assets ---------------------------------------------------
+
+    // Register bytes that are compiled INTO the executable, under a name that can then be loaded
+    // like any other: `mgr.load<TextureAsset>("embedded://icon.png")`.
+    //
+    // The point is not to save a file read. It is that a shipped game is a SINGLE FILE that cannot
+    // be broken by a missing asset folder — the loading screen, the default font, the error
+    // texture: the things needed to tell the player something is wrong are the very things that
+    // must not themselves be able to go missing.
+    //
+    // The span must outlive the manager, which is exactly what a static array generated by
+    // vortex_embed_asset() gives you. Nothing is copied.
+    void embed(std::string_view name, std::span<const std::byte> bytes);
+
+    [[nodiscard]] bool hasEmbedded(std::string_view name) const;
+
+    // --- Reading -----------------------------------------------------------
+
+    // Null while the asset is still loading, and null if it failed. That IS the contract; code
+    // that does not check it is code that breaks on a slow disk and works on the author's.
+    template <typename T>
+    [[nodiscard]] const T* get(AssetHandle<T> handle) const {
+        return static_cast<const T*>(
+            getUntyped(detail::assetTypeId<T>(), handle.index, handle.generation));
+    }
+
+    template <typename T>
+    [[nodiscard]] LoadState state(AssetHandle<T> handle) const {
+        return stateUntyped(detail::assetTypeId<T>(), handle.index, handle.generation);
+    }
+
+    template <typename T>
+    [[nodiscard]] bool isLoaded(AssetHandle<T> handle) const {
+        return state(handle) == LoadState::Loaded;
+    }
+
+    template <typename T>
+    [[nodiscard]] AssetHandle<T> find(std::string_view name) const {
+        const Id id = findUntyped(detail::assetTypeId<T>(), name);
+        return {.index = id.index, .generation = id.generation};
+    }
+
+    template <typename T>
+    [[nodiscard]] Id idOf(AssetHandle<T> handle) const {
+        return {handle.index, handle.generation, detail::assetTypeId<T>()};
+    }
+
+    // --- Waiting -----------------------------------------------------------
+
+    // Collects handles and answers the only two questions a loading screen has: are we there yet,
+    // and how far along are we.
+    class Barrier {
+    public:
+        template <typename T>
+        Barrier& add(const AssetManager& mgr, AssetHandle<T> handle) {
+            if (handle.valid()) m_ids.push_back(mgr.idOf(handle));
+            return *this;
+        }
+
+        [[nodiscard]] bool  done(const AssetManager&) const;
+        [[nodiscard]] f32   progress(const AssetManager&) const;   // 0..1
+        [[nodiscard]] usize pending(const AssetManager&) const;
+        [[nodiscard]] usize failed(const AssetManager&) const;
+        [[nodiscard]] usize size() const { return m_ids.size(); }
+
+    private:
+        std::vector<Id> m_ids;
+    };
+
+    // Block until every one of these is Loaded or Failed.
+    //
+    // It PUMPS update() while it waits, and it has to: an asset does not become Loaded until the
+    // main thread uploads it, and the main thread is the one blocking here. A wait that only slept
+    // would deadlock against the very step it is waiting for.
+    void waitFor(std::span<const Id> ids);
+    void waitForAll();
+
+    // --- Per-frame ---------------------------------------------------------
+
+    // Finish the loads that came back from the IO threads: upload to the GPU, mark them Loaded.
+    // Called once a frame by App.
+    void update();
+    void beginFrame() { update(); }   // the name the old loop used
 
     u32 pollHotReload();
 
-    [[nodiscard]] usize liveTextureCount() const { return m_cache.size(); }
+    // --- Saving ------------------------------------------------------------
+
+    // Write any asset back out, through the loader that knows its format. False if the asset is not
+    // loaded, or if its loader has no writer — which is the honest answer, not a crash and not a
+    // zero-byte file.
+    //
+    // This is how an editor saves, how a generated asset becomes a real one on disk, and how a
+    // cooked/optimised asset gets produced from a source asset at build time.
+    template <typename T>
+    [[nodiscard]] bool saveAsset(AssetHandle<T> handle, const char* path) {
+        return saveUntyped(detail::assetTypeId<T>(), handle.index, handle.generation, path);
+    }
+
+    // Write a texture back out as a PNG. A thin wrapper on saveAsset, kept because it reads better
+    // at the call site.
+    [[nodiscard]] bool saveTexture(TextureHandle handle, const char* path);
+
+    // --- The old texture-only API, unchanged -------------------------------
+
+    [[nodiscard]] TextureHandle       loadTexture(const char* path, const LoadOptions& = {});
+    [[nodiscard]] const TextureAsset* get(TextureHandle handle) const {
+        return get<TextureAsset>(handle);
+    }
+    [[nodiscard]] rhi::TextureHandle gpuTexture(TextureHandle handle) const;
+    [[nodiscard]] std::string        pathOf(rhi::TextureHandle gpu) const;
+    void unload(TextureHandle handle);
+
+    [[nodiscard]] usize liveTextureCount() const;
 
 private:
-    struct Slot {
-        TextureAsset asset;
-        u32          generation = 0;
-        bool         alive      = false;
-        StringId     key;            // path hash, for cache eviction on unload
-        std::string  path;           // watched source path
-        i64          mtime = 0;      // last observed modification time
-    };
+    void registerLoader(u32 type, std::unique_ptr<IAssetLoader>);
+    Id   loadUntyped(u32 type, const char* path, const LoadOptions&);
+    Id   insertUntyped(u32 type, std::string_view name, std::shared_ptr<void>);
+    Id   findUntyped(u32 type, std::string_view name) const;
+    bool saveUntyped(u32 type, u32 index, u32 generation, const char* path);
 
-    struct PendingDestroy {
-        rhi::TextureHandle gpu;
-        u64                reclaimFrame;
-    };
+    [[nodiscard]] const void* getUntyped(u32 type, u32 index, u32 generation) const;
+    [[nodiscard]] LoadState   stateUntyped(u32 type, u32 index, u32 generation) const;
+    [[nodiscard]] LoadState   stateOf(const Id&) const;
 
-    [[nodiscard]] bool importTexture(const char* path, TextureAsset& outAsset,
-                                     i64& outMtime) const;
-    void scheduleDestroy(rhi::TextureHandle gpu);
-
-    rhi::IGraphicsDevice& m_device;
-    pf::IFileSystem&      m_fs;
-
-    std::vector<Slot>            m_slots;
-    std::vector<u32>             m_free;
-    std::unordered_map<u64, u32> m_cache;   // path hash -> slot index
-    std::vector<PendingDestroy>  m_pending;
-    u64                          m_frame = 0;
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
 }

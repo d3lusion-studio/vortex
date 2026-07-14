@@ -1,0 +1,10 @@
+# The palette baked into the executable. One file, two named sections — each one addressable on
+# its own as a subasset: "embedded://fallback.pal#warm".
+[warm]
+#F94144
+#F3722C
+#F9C74F
+[cool]
+#90BE6D
+#577590
+#4D908E

@@ -18,6 +18,7 @@ endif ()
 include(GNUInstallDirs)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(VortexModule)
+include(VortexEmbed)
 
 option(VORTEX_BUILD_EXAMPLES "Build Vortex example" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_BUILD_TOOLS "Build Vortex tools (asset cooker, ...)" ${PROJECT_IS_TOP_LEVEL})

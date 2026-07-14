@@ -164,3 +164,15 @@ target_link_libraries(app_plugin PRIVATE Vortex::vortex)
 
 add_executable(app_settings app_settings/main.cpp)
 target_link_libraries(app_settings PRIVATE Vortex::vortex)
+
+add_executable(assets_demo assets_demo/main.cpp)
+target_link_libraries(assets_demo PRIVATE Vortex::vortex)
+
+# Bake two files into the executable. From here on they are loadable as `embedded://meme1.png` and
+# `embedded://fallback.pal` — note the second is embedded under a name that is not its filename.
+vortex_embed_asset(assets_demo
+    NAMESPACE demo
+    FILES     ${CMAKE_SOURCE_DIR}/assets/meme1.png
+              assets_demo/fallback.pal
+    NAMES     meme1.png
+              fallback.pal)
