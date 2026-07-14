@@ -177,6 +177,45 @@ int main() {
         cubes.push_back(e);
     }
 
+    // --- Bake a lightmap for the floor --------------------------------------
+    //
+    // Everything in the ring occludes it, so the bake records the soft sky-occlusion under
+    // and around each shape. That is light a shadow map cannot produce: it comes from the
+    // whole hemisphere, not from one direction, and it is integrated once instead of every
+    // frame. It is also why lightmaps only work on things that do not move.
+    rhi::TextureHandle floorLightmap{};
+    if (std::getenv("VORTEX_LIGHTMAP") != nullptr) {
+        std::vector<renderer::MeshInstance> bakeScene;
+        ecs::extractMeshes(reg, bakeScene);
+
+        renderer::MeshInstance floor;
+        for (const auto& inst : bakeScene)
+            if (inst.mesh.index == planeMesh.index) floor = inst;
+
+        renderer::DirectionalLight bakeSun;
+        bakeSun.direction = {-0.4f, -1.0f, -0.5f};
+        bakeSun.intensity = 1.6f;
+
+        VORTEX_INFO("App", "Baking floor lightmap (this runs once, on the CPU)...");
+        const auto pixels = mesh.bakeLightmap(floor, bakeScene.data(), bakeScene.size(),
+                                              bakeSun, {.resolution = 256, .skySamples = 32});
+        floorLightmap = device->createTexture(
+            {.width = 256, .height = 256, .format = rhi::Format::R8G8B8A8_UNORM,
+             .debugName = "floor_lightmap"}, pixels.data());
+        VORTEX_INFO("App", "Lightmap baked.");
+
+        // Swap the floor onto a material that reads it. The baked light REPLACES the
+        // environment ambient — it already integrated the sky.
+        const renderer::MaterialHandle litFloor = mesh.createMaterial({
+            .albedo = brickAlb, .normalMap = brickNormal,
+            .lightmap = floorLightmap,
+            .metallic = 0.0f, .roughness = 0.85f,
+            .uvScale = 6.0f,
+            .parallaxScale = 0.05f, .parallaxLayers = 32,
+            .lightmapIntensity = 1.0f});
+        reg.get<ecs::MeshComp>(ground).material = litFloor;
+    }
+
     renderer::Camera cam;
     cam.mode = renderer::Camera::Mode::Perspective;
     cam.fovYRadians = 1.0471975512f;   // 60 degrees

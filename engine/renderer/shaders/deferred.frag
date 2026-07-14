@@ -16,7 +16,8 @@ layout(set = 0, binding = 1) uniform texture2D gNormal;     // rgb = world norma
 layout(set = 0, binding = 2) uniform texture2D gEmissive;   // rgb = emissive, a = occlusion
 layout(set = 0, binding = 3) uniform texture2D gDepth;
 layout(set = 0, binding = 4) uniform texture2D gAO;         // screen-space AO, or 1x1 white
-layout(set = 0, binding = 5) uniform sampler   gSampler;
+layout(set = 0, binding = 5) uniform texture2D gUnused;
+layout(set = 0, binding = 6) uniform sampler   gSampler;
 
 struct Light {
     vec4 position;    // xyz = world position, w = type (0 dir, 1 point, 2 spot)

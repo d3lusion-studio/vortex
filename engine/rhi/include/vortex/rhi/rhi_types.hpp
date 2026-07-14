@@ -76,6 +76,7 @@ struct BindGroupDesc {
     TextureHandle metallicRoughness{};
     TextureHandle emissive{};
     TextureHandle occlusion{};
+    TextureHandle lightmap{};
     SamplerHandle materialSampler{};
 };
 

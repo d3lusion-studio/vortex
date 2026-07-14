@@ -164,17 +164,17 @@ VulkanDevice::VulkanDevice(pf::IWindow& window) {
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &sceneLayoutCI, nullptr, &m_sceneSetLayout));
 
     // PBR material set: albedo (0), normal (1), metallic-roughness (2),
-    // emissive (3), occlusion (4), shared sampler (5).
-    VkDescriptorSetLayoutBinding pbrBindings[6]{};
-    for (u32 i = 0; i < 6; ++i) {
+    // emissive (3), occlusion (4), lightmap (5), shared sampler (6).
+    VkDescriptorSetLayoutBinding pbrBindings[7]{};
+    for (u32 i = 0; i < 7; ++i) {
         pbrBindings[i].binding         = i;
         pbrBindings[i].descriptorCount = 1;
         pbrBindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-        pbrBindings[i].descriptorType  = (i == 5) ? VK_DESCRIPTOR_TYPE_SAMPLER
+        pbrBindings[i].descriptorType  = (i == 6) ? VK_DESCRIPTOR_TYPE_SAMPLER
                                                   : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     }
     VkDescriptorSetLayoutCreateInfo pbrLayoutCI{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    pbrLayoutCI.bindingCount = 6;
+    pbrLayoutCI.bindingCount = 7;
     pbrLayoutCI.pBindings    = pbrBindings;
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &pbrLayoutCI, nullptr, &m_pbrSetLayout));
 
@@ -689,19 +689,19 @@ BindGroupHandle VulkanDevice::createBindGroup(const BindGroupDesc& desc) {
     }
 
     // PBR material set: albedo (0), normal (1), metallic-roughness (2),
-    // emissive (3), occlusion (4), sampler (5).
+    // emissive (3), occlusion (4), lightmap (5), sampler (6).
     if (desc.isPbrMaterialSet) {
-        VulkanTexture* imgs[6] = {
+        VulkanTexture* imgs[7] = {
             m_textures.get(desc.albedo), m_textures.get(desc.normalMap),
             m_textures.get(desc.metallicRoughness), m_textures.get(desc.emissive),
-            m_textures.get(desc.occlusion), nullptr};
-        VulkanSampler* smps[6] = {nullptr, nullptr, nullptr, nullptr, nullptr,
+            m_textures.get(desc.occlusion), m_textures.get(desc.lightmap), nullptr};
+        VulkanSampler* smps[7] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                                   m_samplers.get(desc.materialSampler)};
-        for (u32 i = 0; i < 6; ++i) {
+        for (u32 i = 0; i < 7; ++i) {
             VORTEX_ASSERT(imgs[i] || smps[i], "createBindGroup(PBR) with invalid handle");
             if (!imgs[i] && !smps[i]) return {};
         }
-        return makeImageSet(m_pbrSetLayout, 6, imgs, smps);
+        return makeImageSet(m_pbrSetLayout, 7, imgs, smps);
     }
 
     // Uniform-buffer bind group: a UBO at binding 0, and optionally the per-instance

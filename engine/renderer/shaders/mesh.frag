@@ -12,7 +12,8 @@ layout(set = 0, binding = 1) uniform texture2D uNormalTex;
 layout(set = 0, binding = 2) uniform texture2D uMetalRoughTex;   // G = roughness, B = metallic
 layout(set = 0, binding = 3) uniform texture2D uEmissiveTex;
 layout(set = 0, binding = 4) uniform texture2D uOcclusionTex;    // R = ambient occlusion
-layout(set = 0, binding = 5) uniform sampler   uMatSampler;
+layout(set = 0, binding = 5) uniform texture2D uLightmapTex;   // baked indirect light
+layout(set = 0, binding = 6) uniform sampler   uMatSampler;
 
 struct Light {
     vec4 position;    // xyz = world position, w = type (0 dir, 1 point, 2 spot)
@@ -69,6 +70,8 @@ layout(location = 4) in vec3 vTangent;
 layout(location = 5) in vec3 vBitangent;
 layout(location = 6) in vec4 vColor;
 layout(location = 7) in vec3 vViewTS;
+layout(location = 10) in vec2 vUV1;
+layout(location = 11) in float vLightmap;
 
 layout(location = 0) out vec4 outColor;
 
@@ -323,6 +326,15 @@ void main() {
 
     vec3 ambient  = (kDamb * diffuseIBL + specularIBL) * uFrame.ambient.rgb *
                     uFrame.ambient.w * occlusion;
+
+    // A lightmap REPLACES the diffuse half of the ambient rather than adding to it: the
+    // bake already integrated the sky and the bounced sun over this point's hemisphere,
+    // so keeping the environment term as well would count that light a second time. The
+    // specular half stays — a bake has no idea where the camera is.
+    if (vLightmap > 0.0) {
+        vec3 baked = texture(sampler2D(uLightmapTex, uMatSampler), vUV1).rgb * vLightmap;
+        ambient = kDamb * baked * albedo * occlusion + specularIBL * uFrame.ambient.rgb;
+    }
     vec3 emissive = uPush.emissive.rgb * uPush.emissive.w *
                     texture(sampler2D(uEmissiveTex, uMatSampler), uv).rgb;
 

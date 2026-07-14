@@ -12,7 +12,8 @@
 
 layout(set = 0, binding = 1) uniform texture2D gNormal;   // rgb = world normal
 layout(set = 0, binding = 3) uniform texture2D gDepth;
-layout(set = 0, binding = 5) uniform sampler   gSampler;
+layout(set = 0, binding = 5) uniform texture2D gUnused;
+layout(set = 0, binding = 6) uniform sampler   gSampler;
 
 struct Light {
     vec4 position;

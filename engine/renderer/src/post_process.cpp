@@ -125,6 +125,7 @@ RenderGraph::ResourceId PostProcess::addMotionBlur(
                                           .metallicRoughness = m_white,
                                           .emissive          = m_white,
                                           .occlusion         = m_white,
+                                          .lightmap          = m_white,
                                           .materialSampler   = m_sampler});
         m_motionCache.push_back({sceneTex, velTex, input});
     }

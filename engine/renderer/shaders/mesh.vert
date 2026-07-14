@@ -9,6 +9,7 @@ layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec4 inTangent;   // xyz = tangent, w = handedness (+1/-1)
 layout(location = 4) in vec4 inColor;     // per-vertex tint
+layout(location = 5) in vec2 inUV1;      // the lightmap's non-overlapping unwrap
 
 struct Light {
     vec4 position;    // xyz = world position, w = type (0 dir, 1 point, 2 spot)
@@ -81,10 +82,16 @@ layout(location = 7) out vec3 vViewTS;
 // that moved on its own while the camera held still.
 layout(location = 8) out vec4 vCurClip;
 layout(location = 9) out vec4 vPrevClip;
+// The lightmap UV is NOT scaled by uvScale: a tiling factor is meaningful for a repeating
+// texture and meaningless for an unwrap where each texel is one point on the surface.
+layout(location = 10) out vec2 vUV1;
+layout(location = 11) out float vLightmap;
 
 // Per-instance data, indexed by gl_InstanceIndex. The draw passes the instance's index
 // as firstInstance, so this costs no push-constant bytes — of which there are none left.
-struct Instance { mat4 prevModel; };
+// Per-instance data, indexed by gl_InstanceIndex. Carries what the 128-byte push block
+// cannot: the previous model matrix, and this instance's lightmap intensity.
+struct Instance { mat4 prevModel; vec4 params; };
 layout(set = 1, binding = 1) readonly buffer Instances { Instance uInstances[]; };
 
 void main() {
@@ -99,6 +106,8 @@ void main() {
 
     vUV       = inUV * uPush.params.y;
     vColor    = inColor;
+    vUV1      = inUV1;
+    vLightmap = uInstances[gl_InstanceIndex].params.x;
     vLightPos = uFrame.lightViewProj * world;
 
     mat3 TBN = mat3(vTangent, vBitangent, vNormal);

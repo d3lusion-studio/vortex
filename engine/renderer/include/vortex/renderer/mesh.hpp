@@ -22,6 +22,12 @@ struct MeshVertex {
     Vec3 position;
     Vec3 normal;
     Vec2 uv;
+    // The lightmap's own UV set. A lightmap needs an unwrap where no two triangles overlap
+    // — every texel must belong to exactly one point on the surface — which is a different
+    // requirement from the tiling, repeating UVs a brick texture wants. So it is a second
+    // set, not the first one reused. The primitives below fill it with `uv`, which is
+    // already non-overlapping for a plane; a real mesh needs a real unwrap.
+    Vec2 uv1{0.0f, 0.0f};
     // Tangent frame for normal mapping: xyz = tangent, w = bitangent handedness.
     // The default is a valid frame, so a mesh built without tangents still shades.
     Vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
@@ -193,6 +199,10 @@ struct MaterialDesc {
     rhi::TextureHandle metallicRoughness{};   // G = roughness, B = metallic (glTF layout)
     rhi::TextureHandle emissive{};
     rhi::TextureHandle occlusion{};           // R = ambient occlusion
+    // Baked indirect light, sampled with the mesh's SECOND UV set. Where a lightmap is
+    // present it REPLACES the image-based ambient rather than adding to it: it already
+    // accounts for the sky, and counting both would light the scene twice.
+    rhi::TextureHandle lightmap{};
     rhi::SamplerHandle sampler{};             // default: linear + repeat
 
     Vec4 baseColor{1.0f, 1.0f, 1.0f, 1.0f};
@@ -222,6 +232,9 @@ struct MaterialDesc {
     // through the normal. Needs a blended material and MeshRenderer::setSceneColor().
     f32  transmission = 0.0f;   // 0 = opaque surface, 1 = fully see-through
     f32  ior          = 1.5f;   // index of refraction; 1.5 is window glass, 1.33 water
+
+    // 0 = the material has no lightmap and takes its ambient from the environment.
+    f32  lightmapIntensity = 0.0f;
 
     bool           unlit       = false;   // emit baseColor directly; for lines/gizmos
     rhi::BlendMode blend       = rhi::BlendMode::Opaque;
@@ -265,6 +278,11 @@ struct MeshData {
     void computeTangents();
     // Paint every vertex, e.g. to feed the vertex-colour path without a texture.
     void setColor(Vec4 c);
+
+    // Use the texture UVs as the lightmap unwrap. Correct only where those UVs already
+    // cover the surface exactly once — true of a plane or a quad, false of a cube (whose
+    // six faces all map onto the same 0..1 square, so they would share lightmap texels).
+    void copyUVToLightmapUV();
 };
 
 [[nodiscard]] MeshData makeCube(f32 size = 1.0f);
@@ -414,6 +432,43 @@ public:
     // into a pass that loads the lit colour and the G-buffer's depth.
     void endTransparent(rhi::ICommandList& cmd);
 
+    // --- Lightmap baking ---------------------------------------------------
+    //
+    // A lightmap trades time now for light later: the sun's shadowing and the sky's
+    // occlusion are integrated once, offline, per texel of a static surface — and then
+    // cost a single texture fetch per frame no matter how many bounces went into them.
+    // It is the only way to get soft, occluded ambient light that does not have to be
+    // re-derived every frame, and the reason it works at all is that none of it moves.
+    //
+    // The bake rasterises `target`'s triangles into its SECOND UV set, and for each texel
+    // it lands on, shoots rays at the world: one at the sun (is this point shadowed?) and
+    // `skySamples` over the hemisphere (how much sky can it see?). Everything in
+    // `occluders` blocks those rays, so a lightmap knows about geometry that is nowhere
+    // near it — which is exactly what a shadow map cannot afford to.
+    //
+    // Returns RGBA8 pixels, ready for createTexture(). This is slow and meant to run once,
+    // at load — not per frame.
+    struct LightmapBake {
+        u32  resolution = 128;
+        u32  skySamples = 64;    // hemisphere rays per texel; the cost is nearly all here
+        f32  skyIntensity = 1.0f;
+        Vec3 skyColor{0.55f, 0.65f, 0.85f};
+        f32  rayBias = 0.005f;   // lift the ray off the surface, or it hits the surface
+
+        // Bake the SUN's direct light in as well. Off by default, and think before turning
+        // it on: the real-time pass lights the same surface with the same sun, so a bake
+        // that includes it counts that light twice — the floor goes flat and bright and the
+        // cast shadows wash out of it. Baked light is meant to be the light the real-time
+        // pass CANNOT compute: the sky's occlusion, the bounce off a nearby wall.
+        //
+        // Turn it on only for a surface whose real-time direct light you have disabled.
+        bool directSun = false;
+    };
+    [[nodiscard]] std::vector<u8> bakeLightmap(const MeshInstance& target,
+                                               const MeshInstance* occluders, usize occluderCount,
+                                               const DirectionalLight& sun,
+                                               const LightmapBake& settings) const;
+
     // Nearest hit against the instances submitted this frame. CPU-side, against the
     // mesh's triangles — exact, not a bounding-box guess. Valid after submit().
     [[nodiscard]] RayHit rayCast(const Ray&) const;
@@ -471,6 +526,9 @@ private:
     // which is 64 bytes the 128-byte push block has no room for.
     struct GpuInstance {
         Mat4 prevModel;
+        // x = lightmap intensity (0 = none). The push block is at its 128-byte ceiling,
+        // and this is the buffer that exists precisely for what will not fit there.
+        Vec4 params;
     };
 
     struct SkyUBO {

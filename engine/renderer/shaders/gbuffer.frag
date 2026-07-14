@@ -16,7 +16,8 @@ layout(set = 0, binding = 1) uniform texture2D uNormalTex;
 layout(set = 0, binding = 2) uniform texture2D uMetalRoughTex;
 layout(set = 0, binding = 3) uniform texture2D uEmissiveTex;
 layout(set = 0, binding = 4) uniform texture2D uOcclusionTex;
-layout(set = 0, binding = 5) uniform sampler   uMatSampler;
+layout(set = 0, binding = 5) uniform texture2D uLightmapTex;   // baked indirect light
+layout(set = 0, binding = 6) uniform sampler   uMatSampler;
 
 // Set 1 (the frame data) is bound for the vertex stage, which needs viewProj; this
 // stage never reads it.
@@ -45,6 +46,8 @@ layout(location = 4) in vec3 vTangent;
 layout(location = 5) in vec3 vBitangent;
 layout(location = 6) in vec4 vColor;
 layout(location = 7) in vec3 vViewTS;
+layout(location = 10) in vec2 vUV1;
+layout(location = 11) in float vLightmap;
 layout(location = 8) in vec4 vCurClip;
 layout(location = 9) in vec4 vPrevClip;
 
@@ -121,6 +124,15 @@ void main() {
     vec2 curUV  = (vCurClip.xy  / vCurClip.w)  * 0.5 + 0.5;
     vec2 prevUV = (vPrevClip.xy / vPrevClip.w) * 0.5 + 0.5;
     outVelocity = vec4(curUV - prevUV, 0.0, 1.0);
+
+    // A lightmapped surface carries its baked light in the emissive target, and zeroes the
+    // occlusion channel — which is what the lighting pass multiplies its image-based ambient
+    // by, so this is how a G-buffer says "my ambient is already accounted for".
+    if (vLightmap > 0.0) {
+        vec3 baked = texture(sampler2D(uLightmapTex, uMatSampler), vUV1).rgb * vLightmap;
+        emissive += baked * base.rgb;
+        occlusion = 0.0;
+    }
 
     outAlbedo   = vec4(base.rgb, metallic);
     // A signed float target holds the normal directly — no octahedral packing needed,

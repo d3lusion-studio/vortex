@@ -11,7 +11,8 @@
 
 layout(set = 0, binding = 0) uniform texture2D uScene;
 layout(set = 0, binding = 1) uniform texture2D uVelocity;
-layout(set = 0, binding = 5) uniform sampler   uSampler;
+layout(set = 0, binding = 5) uniform texture2D uUnused;
+layout(set = 0, binding = 6) uniform sampler   uSampler;
 
 #ifdef VORTEX_NO_PUSH_CONSTANTS
 layout(set = 3, binding = 0, std140) uniform Push {

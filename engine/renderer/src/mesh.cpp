@@ -242,6 +242,10 @@ void MeshData::setColor(Vec4 c) {
     for (MeshVertex& v : vertices) v.color = c;
 }
 
+void MeshData::copyUVToLightmapUV() {
+    for (MeshVertex& v : vertices) v.uv1 = v.uv;
+}
+
 // ---------------------------------------------------------------------------
 // Primitives
 // ---------------------------------------------------------------------------
@@ -270,6 +274,7 @@ MeshData makePlane(f32 size) {
     for (int i = 0; i < 4; ++i) m.vertices.push_back({.position = p[i], .normal = n, .uv = uv[i]});
     m.indices = {0, 1, 2, 0, 2, 3};
     m.computeTangents();
+    m.copyUVToLightmapUV();   // a plane's UVs already cover it exactly once
     return m;
 }
 
@@ -283,6 +288,7 @@ MeshData makeQuad(f32 width, f32 height) {
     for (int i = 0; i < 4; ++i) m.vertices.push_back({.position = p[i], .normal = n, .uv = uv[i]});
     m.indices = {0, 1, 2, 0, 2, 3};
     m.computeTangents();
+    m.copyUVToLightmapUV();
     return m;
 }
 
@@ -509,6 +515,7 @@ MeshRenderer::MeshRenderer(rhi::IGraphicsDevice& device, rhi::Format colorFormat
         {.location = 2, .format = rhi::VertexFormat::Float2, .offset = offsetof(MeshVertex, uv)},
         {.location = 3, .format = rhi::VertexFormat::Float4, .offset = offsetof(MeshVertex, tangent)},
         {.location = 4, .format = rhi::VertexFormat::Float4, .offset = offsetof(MeshVertex, color)},
+        {.location = 5, .format = rhi::VertexFormat::Float2, .offset = offsetof(MeshVertex, uv1)},
     };
     gd.topology           = rhi::PrimitiveTopology::TriangleList;
     gd.cull               = rhi::CullMode::Back;
@@ -832,6 +839,7 @@ rhi::PipelineHandle MeshRenderer::pipelineFor(PipelineKey key) {
         {.location = 2, .format = rhi::VertexFormat::Float2, .offset = offsetof(MeshVertex, uv)},
         {.location = 3, .format = rhi::VertexFormat::Float4, .offset = offsetof(MeshVertex, tangent)},
         {.location = 4, .format = rhi::VertexFormat::Float4, .offset = offsetof(MeshVertex, color)},
+        {.location = 5, .format = rhi::VertexFormat::Float2, .offset = offsetof(MeshVertex, uv1)},
     };
     pd.topology         = rhi::PrimitiveTopology::TriangleList;
     pd.cull             = key.doubleSided ? rhi::CullMode::None : rhi::CullMode::Back;
@@ -904,6 +912,7 @@ MaterialHandle MeshRenderer::createMaterial(const MaterialDesc& desc) {
         .metallicRoughness = desc.metallicRoughness.valid() ? desc.metallicRoughness : m_white,
         .emissive          = desc.emissive.valid()          ? desc.emissive          : m_white,
         .occlusion         = desc.occlusion.valid()         ? desc.occlusion         : m_white,
+        .lightmap          = desc.lightmap.valid()          ? desc.lightmap          : m_black,
         .materialSampler   = sampler,
     });
 
@@ -1298,9 +1307,17 @@ void MeshRenderer::classify() {
     // from the camera — which is what a reprojection would have given anyway.
     ensureInstanceCapacity(static_cast<u32>(m_instances.size()));
     m_instanceData.resize(m_instances.size());
-    for (usize i = 0; i < m_instances.size(); ++i)
-        m_instanceData[i].prevModel = m_instances[i].hasPrevModel ? m_instances[i].prevModel
-                                                                  : m_instances[i].model;
+    for (usize i = 0; i < m_instances.size(); ++i) {
+        const MeshInstance& inst = m_instances[i];
+        m_instanceData[i].prevModel = inst.hasPrevModel ? inst.prevModel : inst.model;
+
+        f32 lightmap = 0.0f;
+        if (inst.material.valid() && inst.material.index < m_materials.size()) {
+            const MaterialDesc& d = m_materials[inst.material.index].desc;
+            if (d.lightmap.valid()) lightmap = d.lightmapIntensity;
+        }
+        m_instanceData[i].params = {lightmap, 0.0f, 0.0f, 0.0f};
+    }
     if (!m_instanceData.empty())
         m_device.updateBuffer(m_instanceBuffers[m_frame], m_instanceData.data(),
                               m_instanceData.size() * sizeof(GpuInstance));
@@ -1379,6 +1396,7 @@ rhi::BindGroupHandle MeshRenderer::gbufferGroup(rhi::TextureHandle ao) {
         .metallicRoughness = m_gbufferEmissive,
         .emissive          = m_gbufferDepth,
         .occlusion         = ao,
+        .lightmap          = m_white,           // unused by the lighting pass
         .materialSampler   = m_shadowSampler,   // point sampling: no G-buffer filtering
     });
     m_gbufferCache.push_back({m_gbufferAlbedo, m_gbufferNormal, m_gbufferEmissive,
@@ -1539,6 +1557,187 @@ RayHit MeshRenderer::rayCastMesh(MeshHandle h, const Mat4& model, const Ray& ray
     });
     best.distance = length(best.point - ray.origin);
     return best;
+}
+
+// ---------------------------------------------------------------------------
+// Lightmap baking
+// ---------------------------------------------------------------------------
+
+std::vector<u8> MeshRenderer::bakeLightmap(const MeshInstance& target,
+                                           const MeshInstance* occluders, usize occluderCount,
+                                           const DirectionalLight& sun,
+                                           const LightmapBake& s) const {
+    const u32 res = std::max(s.resolution, 4u);
+    std::vector<u8> pixels(static_cast<usize>(res) * res * 4, 0);
+
+    if (!target.mesh.valid() || target.mesh.index >= m_meshes.size()) return pixels;
+    const GpuMesh& tm = m_meshes[target.mesh.index];
+    if (!tm.alive) return pixels;
+
+    // Every occluder's triangles in world space, grouped per object and wrapped in a box.
+    //
+    // Without the boxes this is unusable: a texel shoots dozens of rays, each ray would
+    // test every triangle in the scene, and the bake becomes billions of intersections. A
+    // ray that flies off into the sky now costs one slab test per object instead of eight
+    // hundred triangle tests, which is the difference between a second and an afternoon.
+    struct Tri { Vec3 a, b, c; };
+    struct Occluder {
+        std::vector<Tri> tris;
+        Vec3 bmin{0, 0, 0}, bmax{0, 0, 0};
+    };
+    std::vector<Occluder> world;
+
+    for (usize i = 0; i < occluderCount; ++i) {
+        const MeshInstance& o = occluders[i];
+        if (!o.mesh.valid() || o.mesh.index >= m_meshes.size()) continue;
+        const GpuMesh& gm = m_meshes[o.mesh.index];
+        if (!gm.alive) continue;
+
+        Occluder occ;
+        const std::vector<MeshVertex>& vs = gm.cpu.vertices;
+        const std::vector<u32>&        is = gm.cpu.indices;
+        for (usize t = 0; t + 2 < is.size(); t += 3)
+            occ.tris.push_back({transformPoint(o.model, vs[is[t]].position),
+                                transformPoint(o.model, vs[is[t + 1]].position),
+                                transformPoint(o.model, vs[is[t + 2]].position)});
+        if (occ.tris.empty()) continue;
+
+        occ.bmin = occ.bmax = occ.tris[0].a;
+        for (const Tri& t : occ.tris)
+            for (const Vec3& p : {t.a, t.b, t.c}) {
+                occ.bmin = {std::min(occ.bmin.x, p.x), std::min(occ.bmin.y, p.y),
+                            std::min(occ.bmin.z, p.z)};
+                occ.bmax = {std::max(occ.bmax.x, p.x), std::max(occ.bmax.y, p.y),
+                            std::max(occ.bmax.z, p.z)};
+            }
+        world.push_back(std::move(occ));
+    }
+
+    // Slab test: the ray enters the box only if it is inside all three slabs at once.
+    auto hitsBox = [](const Ray& r, Vec3 bmin, Vec3 bmax, f32 maxDist) {
+        f32 tmin = 0.0f, tmax = maxDist;
+        for (int axis = 0; axis < 3; ++axis) {
+            const f32 o = (&r.origin.x)[axis];
+            const f32 d = (&r.direction.x)[axis];
+            const f32 lo = (&bmin.x)[axis], hi = (&bmax.x)[axis];
+            if (std::fabs(d) < 1e-8f) {
+                if (o < lo || o > hi) return false;   // parallel and outside the slab
+                continue;
+            }
+            f32 t1 = (lo - o) / d, t2 = (hi - o) / d;
+            if (t1 > t2) std::swap(t1, t2);
+            tmin = std::max(tmin, t1);
+            tmax = std::min(tmax, t2);
+            if (tmin > tmax) return false;
+        }
+        return true;
+    };
+
+    auto occluded = [&](const Ray& r, f32 maxDist) {
+        for (const Occluder& occ : world) {
+            if (!hitsBox(r, occ.bmin, occ.bmax, maxDist)) continue;
+            for (const Tri& t : occ.tris) {
+                const f32 hit = intersectTriangle(r, t.a, t.b, t.c);
+                if (hit > 0.0f && hit < maxDist) return true;
+            }
+        }
+        return false;
+    };
+
+    const Vec3 sunDir   = normalize(sun.direction);
+    const Vec3 toSun    = sunDir * -1.0f;
+    const Vec3 sunLight = sun.color * sun.intensity;
+
+    const std::vector<MeshVertex>& vs = tm.cpu.vertices;
+    const std::vector<u32>&        is = tm.cpu.indices;
+
+    // Rasterise the mesh in ITS OWN UV1 space. Each texel the triangle covers is a point on
+    // the surface, recovered by barycentric interpolation — this is the whole reason the
+    // lightmap needs an unwrap where no two triangles overlap.
+    for (usize t = 0; t + 2 < is.size(); t += 3) {
+        const MeshVertex& v0 = vs[is[t]];
+        const MeshVertex& v1 = vs[is[t + 1]];
+        const MeshVertex& v2 = vs[is[t + 2]];
+
+        const Vec2 uv0 = v0.uv1, uv1 = v1.uv1, uv2 = v2.uv1;
+
+        const f32 minU = std::min({uv0.x, uv1.x, uv2.x});
+        const f32 maxU = std::max({uv0.x, uv1.x, uv2.x});
+        const f32 minV = std::min({uv0.y, uv1.y, uv2.y});
+        const f32 maxV = std::max({uv0.y, uv1.y, uv2.y});
+
+        const i32 x0 = std::max(0, static_cast<i32>(minU * res) - 1);
+        const i32 x1 = std::min(static_cast<i32>(res) - 1, static_cast<i32>(maxU * res) + 1);
+        const i32 y0 = std::max(0, static_cast<i32>(minV * res) - 1);
+        const i32 y1 = std::min(static_cast<i32>(res) - 1, static_cast<i32>(maxV * res) + 1);
+
+        const f32 denom = (uv1.y - uv2.y) * (uv0.x - uv2.x) + (uv2.x - uv1.x) * (uv0.y - uv2.y);
+        if (std::fabs(denom) < 1e-12f) continue;   // degenerate in UV space: no texels
+
+        for (i32 py = y0; py <= y1; ++py) {
+            for (i32 px = x0; px <= x1; ++px) {
+                const f32 u = (static_cast<f32>(px) + 0.5f) / static_cast<f32>(res);
+                const f32 v = (static_cast<f32>(py) + 0.5f) / static_cast<f32>(res);
+
+                f32 w0 = ((uv1.y - uv2.y) * (u - uv2.x) + (uv2.x - uv1.x) * (v - uv2.y)) / denom;
+                f32 w1 = ((uv2.y - uv0.y) * (u - uv2.x) + (uv0.x - uv2.x) * (v - uv2.y)) / denom;
+                f32 w2 = 1.0f - w0 - w1;
+
+                // A small slack, so texels straddling a triangle's edge still get filled —
+                // otherwise the seams between triangles bake as black cracks.
+                constexpr f32 kSlack = -0.02f;
+                if (w0 < kSlack || w1 < kSlack || w2 < kSlack) continue;
+
+                const Vec3 localP = v0.position * w0 + v1.position * w1 + v2.position * w2;
+                const Vec3 localN = v0.normal * w0 + v1.normal * w1 + v2.normal * w2;
+
+                const Vec3 P = transformPoint(target.model, localP);
+                const Vec3 N = normalize(transformPoint(target.model, localP + localN) - P);
+
+                const Vec3 origin = P + N * s.rayBias;
+
+                // Direct sun, shadowed by everything in the world — only if asked for. See
+                // LightmapBake::directSun: by default the real-time pass owns the sun and
+                // the bake owns only what the real-time pass cannot see.
+                Vec3 radiance{0.0f, 0.0f, 0.0f};
+                if (s.directSun) {
+                    const f32 NdotL = dot(N, toSun);
+                    if (NdotL > 0.0f && !occluded({origin, toSun}, 1e6f))
+                        radiance = radiance + sunLight * NdotL;
+                }
+
+                // Sky: cosine-weighted hemisphere around N. This is the part a shadow map
+                // cannot give you — soft occlusion from geometry anywhere in the scene.
+                Vec3 up = std::fabs(N.y) > 0.99f ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+                const Vec3 tangent  = normalize(cross(up, N));
+                const Vec3 bitangent = cross(N, tangent);
+
+                f32 visible = 0.0f;
+                for (u32 i = 0; i < s.skySamples; ++i) {
+                    // Deterministic low-discrepancy directions: a golden-ratio spiral over
+                    // the hemisphere. Random ones would make the bake differ between runs.
+                    const f32 a  = (static_cast<f32>(i) + 0.5f) / static_cast<f32>(s.skySamples);
+                    const f32 r  = std::sqrt(a);                    // cosine-weighted
+                    const f32 ph = static_cast<f32>(i) * 2.39996323f;   // golden angle
+                    const Vec3 dir = normalize(tangent * (r * std::cos(ph)) +
+                                               bitangent * (r * std::sin(ph)) +
+                                               N * std::sqrt(std::max(1.0f - a, 0.0f)));
+                    if (!occluded({origin, dir}, 1e6f)) visible += 1.0f;
+                }
+                visible /= static_cast<f32>(s.skySamples);
+                radiance = radiance + s.skyColor * (visible * s.skyIntensity);
+
+                const usize idx = (static_cast<usize>(py) * res + static_cast<usize>(px)) * 4;
+                for (int c = 0; c < 3; ++c) {
+                    const f32 value = (&radiance.x)[c];
+                    pixels[idx + static_cast<usize>(c)] =
+                        static_cast<u8>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+                }
+                pixels[idx + 3] = 255;
+            }
+        }
+    }
+    return pixels;
 }
 
 RayHit MeshRenderer::rayCast(const Ray& ray) const {
