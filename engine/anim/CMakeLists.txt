@@ -4,6 +4,7 @@ vortex_add_module(anim
         src/clip.cpp
         src/pose.cpp
         src/graph.cpp
+        src/state_machine.cpp
         src/curve.cpp
     PUBLIC_DEPS
         Vortex::core

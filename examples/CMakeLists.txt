@@ -150,6 +150,11 @@ target_link_libraries(bloom2d PRIVATE Vortex::vortex)
 add_executable(skinned skinned/main.cpp)
 target_link_libraries(skinned PRIVATE Vortex::vortex)
 
+# Headless: exercises the animation state machine + root motion with no window or GPU,
+# so it doubles as a CI check for the anim module.
+add_executable(anim_state anim_state/main.cpp)
+target_link_libraries(anim_state PRIVATE Vortex::vortex)
+
 add_executable(ui_anim ui_anim/main.cpp)
 target_link_libraries(ui_anim PRIVATE Vortex::vortex)
 

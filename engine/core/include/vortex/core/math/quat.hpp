@@ -39,6 +39,20 @@ struct Quat {
         return x * r.x + y * r.y + z * r.z + w * r.w;
     }
 
+    // The reverse rotation. For a unit quaternion — which every rotation here is — this is
+    // also the inverse, without the divide. `q.conjugate() * q` is identity, and
+    // `a.conjugate() * b` is the rotation that takes `a` to `b`, which is what a rotation
+    // DELTA is.
+    [[nodiscard]] constexpr Quat conjugate() const noexcept { return {-x, -y, -z, w}; }
+
+    // Rotate a vector by this quaternion (assumed normalized). The usual q·v·q* sandwich,
+    // folded into two cross products — fewer operations, and no 3×3 matrix built on the way.
+    [[nodiscard]] constexpr Vec3 rotate(Vec3 v) const noexcept {
+        const Vec3 u{x, y, z};
+        const Vec3 t = cross(u, v) * 2.0f;
+        return v + t * w + cross(u, t);
+    }
+
     // Spherical interpolation: the shortest rotation from `a` to `b`, at constant angular
     // speed. This is the whole reason animation keeps rotations as quaternions — lerp a
     // pair of rotation matrices and the result is not a rotation at all, it is a shear.

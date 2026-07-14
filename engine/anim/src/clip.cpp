@@ -76,6 +76,29 @@ void Clip::eventsIn(f32 from, f32 to, std::vector<const Event*>& out) const {
         if (e.time > from && e.time <= to) out.push_back(&e);
 }
 
+RootMotion Clip::rootMotion(i32 joint, f32 from, f32 to) const {
+    RootMotion rm;
+    if (joint < 0 || static_cast<usize>(joint) >= tracks.size()) return rm;
+    const JointTrack& track = tracks[static_cast<usize>(joint)];
+
+    // The joint's orientation at the start of the span. Everything is expressed relative to
+    // it — an unkeyed rotation channel leaves it identity, which degrades gracefully to
+    // "delta in parent space".
+    Quat q0{}, q1{};
+    const bool hasRotation = sampleChannel(track.rotation, from, q0,
+                                 [](Quat a, Quat b, f32 u) { return Quat::slerp(a, b, u); }) &&
+                             sampleChannel(track.rotation, to, q1,
+                                 [](Quat a, Quat b, f32 u) { return Quat::slerp(a, b, u); });
+    if (hasRotation) rm.rotation = (q0.conjugate() * q1).normalized();
+
+    Vec3 p0{}, p1{};
+    if (sampleChannel(track.translation, from, p0, lerp) &&
+        sampleChannel(track.translation, to, p1, lerp))
+        rm.translation = q0.conjugate().rotate(p1 - p0);
+
+    return rm;
+}
+
 void Player::play(const Clip* clip, bool restart) {
     if (m_clip == clip && !restart) return;
     m_clip     = clip;
@@ -85,6 +108,7 @@ void Player::play(const Clip* clip, bool restart) {
 
 void Player::update(f32 dt) {
     m_fired.clear();
+    m_rootMotion = {};
     if (m_clip == nullptr || m_finished) return;
 
     const f32 previous = m_time;
@@ -100,15 +124,29 @@ void Player::update(f32 dt) {
         m_time = std::fmod(m_time, duration);
         if (m_time < 0.0f) m_time += duration;   // playing backwards wraps too
 
+        // Events and root motion have the same wrap problem: a step that crosses the loop
+        // point covers the tail of the timeline AND its head, and dropping either half
+        // surfaces as "sometimes the footstep doesn't play" / the character hitching one
+        // frame's distance backwards, once per loop.
+        const bool wrapped = forward ? raw >= duration : raw < 0.0f;
+
         if (forward) {
-            if (raw >= duration) {
-                // The step crossed the loop point. Fire the tail of the timeline and then its
-                // head — dropping either would swallow an event whenever a frame happened to
-                // land on the wrap, which surfaces only as "the sound sometimes doesn't play".
+            if (wrapped) {
                 m_clip->eventsIn(previous, duration, m_fired);
                 m_clip->eventsIn(0.0f, m_time, m_fired);
             } else {
                 m_clip->eventsIn(previous, m_time, m_fired);
+            }
+        }
+
+        if (rootMotionJoint >= 0) {
+            if (wrapped) {
+                const f32 mid = forward ? duration : 0.0f;
+                const f32 re  = forward ? 0.0f : duration;
+                m_rootMotion = m_clip->rootMotion(rootMotionJoint, previous, mid)
+                                   .then(m_clip->rootMotion(rootMotionJoint, re, m_time));
+            } else {
+                m_rootMotion = m_clip->rootMotion(rootMotionJoint, previous, m_time);
             }
         }
         return;
@@ -122,6 +160,8 @@ void Player::update(f32 dt) {
         m_finished = true;
     }
     if (forward) m_clip->eventsIn(previous, m_time, m_fired);
+    if (rootMotionJoint >= 0)
+        m_rootMotion = m_clip->rootMotion(rootMotionJoint, previous, m_time);
 }
 
 void Player::pose(const Skeleton& skeleton, std::vector<Transform>& out) const {
@@ -129,6 +169,15 @@ void Player::pose(const Skeleton& skeleton, std::vector<Transform>& out) const {
     // instead of keeping whatever the last clip left in it.
     out = skeleton.bindPose();
     if (m_clip != nullptr) m_clip->sample(m_time, out);
+
+    // Root motion was handed to gameplay; the pose must not walk off on its own as well.
+    // Scale stays sampled — squash-and-stretch is not movement.
+    if (rootMotionJoint >= 0 && static_cast<usize>(rootMotionJoint) < out.size() &&
+        static_cast<usize>(rootMotionJoint) < skeleton.joints.size()) {
+        const Transform& bind = skeleton.joints[static_cast<usize>(rootMotionJoint)].bindPose;
+        out[static_cast<usize>(rootMotionJoint)].translation = bind.translation;
+        out[static_cast<usize>(rootMotionJoint)].rotation    = bind.rotation;
+    }
 }
 
 }
