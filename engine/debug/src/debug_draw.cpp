@@ -88,6 +88,33 @@ void DebugDraw::text(Vec2 topLeft, std::string_view str, Vec4 color, Category ca
     m_texts.push_back({topLeft, std::string(str), color, cat});
 }
 
+void DebugDraw::grid(Rect bounds, f32 spacing, Vec4 color, Vec4 majorColor, u32 majorEvery,
+                     f32 thickness, Category cat) {
+    if (spacing <= 0.0f || bounds.isEmpty()) return;
+
+    // Snap to the grid, not to the bounds: the lines live at multiples of `spacing` in the
+    // WORLD, so a moving camera slides across a fixed grid instead of dragging one along.
+    const auto major = [majorEvery](i64 index) {
+        return majorEvery > 0 && index % static_cast<i64>(majorEvery) == 0;
+    };
+
+    const i64 x0 = static_cast<i64>(std::ceil(bounds.x / spacing));
+    const i64 x1 = static_cast<i64>(std::floor(bounds.right() / spacing));
+    for (i64 i = x0; i <= x1; ++i) {
+        const f32 x = static_cast<f32>(i) * spacing;
+        line({x, bounds.y}, {x, bounds.bottom()}, major(i) ? majorColor : color,
+             thickness, cat);
+    }
+
+    const i64 y0 = static_cast<i64>(std::ceil(bounds.y / spacing));
+    const i64 y1 = static_cast<i64>(std::floor(bounds.bottom() / spacing));
+    for (i64 i = y0; i <= y1; ++i) {
+        const f32 y = static_cast<f32>(i) * spacing;
+        line({bounds.x, y}, {bounds.right(), y}, major(i) ? majorColor : color,
+             thickness, cat);
+    }
+}
+
 void DebugDraw::flush(renderer::SpriteBatch& batch, const text::Font* font, i32 layer) {
     for (const Quad& q : m_quads) {
         if (!enabled(q.cat)) continue;

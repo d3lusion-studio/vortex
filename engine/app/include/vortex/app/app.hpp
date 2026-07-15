@@ -10,6 +10,7 @@
 #include "vortex/ecs/serialize.hpp"
 #include "vortex/platform/input_map.hpp"
 #include "vortex/renderer/post_process.hpp"
+#include "vortex/rhi/rhi_enums.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
 
 #include <functional>
@@ -43,6 +44,13 @@ struct AppConfig {
 
     u32 maxSprites = 100000;
 
+    // Fifo (the default) is vsync: present blocks until the display is ready, which caps the
+    // frame rate at the refresh rate and is what a shipped game wants. Immediate does not
+    // block — use it to benchmark, because with vsync on, the loop's wall clock measures the
+    // MONITOR and tells you nothing about the engine. Mailbox is vsync without the block
+    // (triple buffering), where the driver offers it.
+    rhi::PresentMode presentMode = rhi::PresentMode::Fifo;
+
     // Render the scene into a floating-point target and run bloom + ACES tone mapping
     // on the way to the screen, instead of drawing straight to the backbuffer.
     //
@@ -58,6 +66,31 @@ struct AppConfig {
     // visible set reaches the thousands; below that the sync costs more.
     bool parallelExtract = false;
     u32  workerCount     = 0;   // 0 = hardware concurrency
+
+    // Run the simulation on its own thread, one frame ahead of the renderer: the game
+    // thread computes frame N+1 while the main thread records and submits frame N. Where
+    // parallelExtract splits ONE step across cores, this overlaps two different steps —
+    // the two stack, and a game that is CPU-bound on both halves wants both.
+    //
+    // The frame the player sees is one simulation step older than in the single-threaded
+    // loop. That is the price of the pipeline and it is why this is opt-in.
+    //
+    // *** The thread contract, which the loop relies on and does not enforce ***
+    //
+    //   Game thread owns: the Scene (registry, camera, particles), physics, and the hooks
+    //     onFixedUpdate / onUpdate / onRender. onRender only fills a CPU-side sprite list —
+    //     SpriteBatch::end() is the only part that touches the GPU, and the loop keeps it.
+    //   Main thread owns: the window and input (GLFW is main-thread-only), the RHI device,
+    //     and every GPU upload.
+    //
+    // So: DO NOT call device-touching App APIs from an update or render hook when this is
+    // on — loadTexture(), whiteTexture(), device(). They assert in debug builds. Load in
+    // onStart, or through assets() (which is built for exactly this: its IO threads decode,
+    // and the main thread uploads).
+    //
+    // Reading input() from a hook IS safe: the loop polls the window before it releases the
+    // game thread, and touches GLFW nowhere else, so the two never overlap.
+    bool threadedSimulation = false;
 
     // Stop after this many frames. 0 runs until the window closes.
     //
@@ -224,6 +257,13 @@ public:
     [[nodiscard]] usize visibleSprites() const;
 
 private:
+    // The frame, cut into the three pieces the pipeline needs to hand between threads.
+    // See AppConfig::threadedSimulation for which thread owns what.
+    void pollPlatform();        // main thread: clock, input, window size
+    void simulate(u32 slot);    // game thread when pipelined, main thread when not
+    void render(u32 slot);      // main thread, always
+    void endFrame();            // main thread: frame counter, fps, diagnostics
+
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };

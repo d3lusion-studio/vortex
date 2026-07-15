@@ -9,6 +9,7 @@ vortex_add_module(core
         src/settings.cpp
         src/json.cpp
         src/console.cpp
+        src/diagnostics.cpp
         src/profiler.cpp
         src/frame_allocator.cpp)
 

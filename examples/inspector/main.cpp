@@ -1,6 +1,8 @@
+#include "vortex/core/diagnostics.hpp"
 #include "vortex/core/log.hpp"
 #include "vortex/debug/imgui_layer.hpp"
 #include "vortex/debug/inspector.hpp"
+#include "vortex/debug/perf_overlay.hpp"
 #include "vortex/ecs/components.hpp"
 #include "vortex/ecs/scene.hpp"
 #include "vortex/platform/clock.hpp"
@@ -80,6 +82,7 @@ int main() {
     u64 frameCount = 0;
     int lastW = fbw, lastH = fbh;
     bool showDemo = false;
+    debug::PerfOverlay overlay;
     std::vector<renderer::RenderItem> items;
 
     while (!window->shouldClose()) {
@@ -115,6 +118,12 @@ int main() {
         imgui.newFrame(in, dt);
         inspector.draw(scene);
         if (showDemo) imgui.showDemoWindow(&showDemo);
+
+        // The perf overlay reads whatever diag:: has been fed — frame() gives it FPS and
+        // the frame graph, the entity count is one add() at the site that knows it.
+        diag::frame(dt);
+        diag::add("entities", static_cast<f64>(items.size()));
+        overlay.draw();
 
         scene.update(dt);
         scene.extract(items);

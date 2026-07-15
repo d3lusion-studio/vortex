@@ -1,4 +1,5 @@
 #pragma once
+#include "vortex/core/math/rect.hpp"
 #include "vortex/core/math/vec2.hpp"
 #include "vortex/core/math/vec4.hpp"
 #include "vortex/core/types.hpp"
@@ -37,6 +38,14 @@ public:
     void circle(Vec2 center, f32 radius, Vec4 color, i32 segments = 24,
                 f32 thickness = 1.5f, Category cat = kDefault);
     void text(Vec2 topLeft, std::string_view str, Vec4 color, Category cat = kDefault);
+
+    // A ground grid covering `bounds`, lines snapped to multiples of `spacing`. Pass the
+    // camera's visibleBounds() and it is infinite in every way that matters: wherever the
+    // camera goes, the grid was already there, and only the visible lines are ever drawn.
+    // Lines on multiples of `majorEvery` * spacing draw in `majorColor` — counting cells
+    // is what a grid is FOR, and uniform lines make it wallpaper.
+    void grid(Rect bounds, f32 spacing, Vec4 color, Vec4 majorColor, u32 majorEvery = 10,
+              f32 thickness = 1.0f, Category cat = kDefault);
 
     void flush(renderer::SpriteBatch& batch, const text::Font* font = nullptr, i32 layer = 5000);
 

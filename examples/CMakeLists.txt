@@ -155,6 +155,27 @@ target_link_libraries(skinned PRIVATE Vortex::vortex)
 add_executable(anim_state anim_state/main.cpp)
 target_link_libraries(anim_state PRIVATE Vortex::vortex)
 
+# Headless self-checking examples — same idea as anim_state: they demonstrate the API and
+# fail loudly in CI if the promise breaks.
+add_executable(async_tasks async_tasks/main.cpp)
+target_link_libraries(async_tasks PRIVATE Vortex::vortex)
+
+add_executable(camera_rig camera_rig/main.cpp)
+target_link_libraries(camera_rig PRIVATE Vortex::vortex)
+
+add_executable(diagnostics diagnostics/main.cpp)
+target_link_libraries(diagnostics PRIVATE Vortex::vortex)
+
+# A scripted audio tour: needs speakers, not a window; exits cleanly when there is no
+# audio device, so it is CI-safe.
+add_executable(audio_demo audio_demo/main.cpp)
+target_link_libraries(audio_demo PRIVATE Vortex::vortex)
+
+# The pipelined game loop (AppConfig::threadedSimulation). Prints a simulation checksum and
+# the sim/render overlap; run it with VORTEX_THREADED=0 and =1 and compare.
+add_executable(threaded threaded/main.cpp)
+target_link_libraries(threaded PRIVATE Vortex::vortex)
+
 add_executable(ui_anim ui_anim/main.cpp)
 target_link_libraries(ui_anim PRIVATE Vortex::vortex)
 

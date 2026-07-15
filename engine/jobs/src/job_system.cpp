@@ -50,6 +50,30 @@ void JobSystem::workerLoop() {
     }
 }
 
+JobHandle JobSystem::submit(std::function<void()> fn) {
+    JobHandle handle;
+    handle.m_state = std::make_shared<std::atomic<bool>>(false);
+
+    // The task owns a copy of the state, so the handle may be dropped without the job
+    // writing through a dead pointer.
+    auto state = handle.m_state;
+    {
+        std::lock_guard lock(m_mutex);
+        m_tasks.push(Task{[fn = std::move(fn), state = std::move(state)] {
+            fn();
+            state->store(true, std::memory_order_release);
+        }});
+    }
+
+    m_cv.notify_one();
+    return handle;
+}
+
+void JobSystem::wait(const JobHandle& job) {
+    while (!job.done())
+        if (!tryRunOne()) std::this_thread::yield();
+}
+
 void JobSystem::parallelFor(usize count, const std::function<void(usize)>& body, usize grain) {
     if (count == 0) return;
 

@@ -8,6 +8,7 @@ vortex_add_module(debug
         src/debug_draw.cpp
         src/imgui_layer.cpp
         src/inspector.cpp
+        src/perf_overlay.cpp
         ${_imgui_vert_header}
         ${_imgui_frag_header}
     PUBLIC_DEPS

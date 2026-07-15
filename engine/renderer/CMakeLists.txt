@@ -30,6 +30,7 @@ vortex_add_module(renderer
     SOURCES
         src/sprite_batch.cpp
         src/sprite_animation.cpp
+        src/camera_controller.cpp
         src/atlas.cpp
         src/mesh2d.cpp
         src/particles.cpp
