@@ -160,6 +160,16 @@ target_link_libraries(anim_state PRIVATE Vortex::vortex)
 add_executable(async_tasks async_tasks/main.cpp)
 target_link_libraries(async_tasks PRIVATE Vortex::vortex)
 
+# Headless: exercises the ECS command buffer, observers/events, entity disabling,
+# iter-combinations, delayed commands and callbacks with no window or GPU.
+add_executable(ecs_features ecs_features/main.cpp)
+target_link_libraries(ecs_features PRIVATE Vortex::vortex)
+
+# Headless: 2D bounding volumes, intersection/raycast tests, primitive measures,
+# uniform sampling and a custom primitive — pure math, no window or GPU.
+add_executable(math_primitives math_primitives/main.cpp)
+target_link_libraries(math_primitives PRIVATE Vortex::vortex)
+
 add_executable(camera_rig camera_rig/main.cpp)
 target_link_libraries(camera_rig PRIVATE Vortex::vortex)
 
