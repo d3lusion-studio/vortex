@@ -5,6 +5,7 @@
 #include "vortex/rhi/rhi_handle.hpp"
 
 #include <memory>
+#include <string>
 #include <string_view>
 
 namespace vortex::rhi { class IGraphicsDevice; }
@@ -23,6 +24,19 @@ public:
 
     [[nodiscard]] static std::unique_ptr<Font> loadFromFile(
         rhi::IGraphicsDevice& device, pf::IFileSystem& fs, const char* path, f32 pixelHeight);
+
+    // The first font this machine actually has, so a demo, a debug overlay or a HUD can
+    // put text on screen without shipping a .ttf or hard-coding someone else's path.
+    // Honours the VORTEX_FONT_PATH environment variable first.
+    //
+    // Null when nothing is found, which is a normal outcome on a bare container — check
+    // it rather than assuming a font exists.
+    [[nodiscard]] static std::unique_ptr<Font> loadDefault(
+        rhi::IGraphicsDevice& device, pf::IFileSystem& fs, f32 pixelHeight);
+
+    // The path loadDefault() would use, or empty. Split out so a caller can report which
+    // font it got, or decide it would rather ship its own.
+    [[nodiscard]] static std::string defaultPath(pf::IFileSystem& fs);
 
     ~Font();
     Font(const Font&)            = delete;

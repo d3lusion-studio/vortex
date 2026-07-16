@@ -1,6 +1,7 @@
 #include "vortex/app/app.hpp"
 
 #include "vortex/asset/asset_manager.hpp"
+#include "vortex/asset/image.hpp"
 #include "vortex/audio/audio.hpp"
 #include "vortex/core/json.hpp"
 #include "vortex/core/log.hpp"
@@ -30,6 +31,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace vortex::app {
@@ -40,11 +42,22 @@ namespace vortex::app {
 // is exactly what a sprite does.
 inline constexpr rhi::Format kHdrFormat = rhi::Format::R16G16B16A16_SFLOAT;
 
+// The overlay's view-projection: framebuffer pixels, origin at the centre, +y up. This is
+// Camera2D's projection at zoom 1 with the camera at the origin — stated directly rather
+// than by parking a second Camera2D somewhere, because the overlay has no camera to move.
+[[nodiscard]] Mat4 uiProjection(f32 width, f32 height) {
+    return Mat4::ortho(-width * 0.5f, width * 0.5f, -height * 0.5f, height * 0.5f, -1.0f, 1.0f);
+}
+
 // Declaration order is destruction order reversed: the batcher and the asset
 // manager both free GPU objects in their destructors, so the device must outlive
 // them, and the swapchain must go before the device it was created from.
 struct App::Impl {
     AppConfig config;
+
+    // Non-empty for exactly one frame: render() captures the backbuffer into it and
+    // clears it again, so a request can never fire twice.
+    std::string screenshotPath;
 
     std::unique_ptr<pf::IWindow>        window;
     std::unique_ptr<pf::IInputProvider> input;
@@ -65,6 +78,10 @@ struct App::Impl {
     struct FrameSlot {
         std::unique_ptr<renderer::SpriteBatch> batch;
         std::vector<renderer::RenderItem>      items;
+        // The onUi() overlay. A separate batcher, not a layer of the one above: it is
+        // bound to a different matrix (pixels, not world) and — when post-processing is
+        // on — to a different target format, and a batcher is one of each.
+        std::unique_ptr<renderer::SpriteBatch> uiBatch;
     };
     // [1] is only built when threadedSimulation is on: the single-threaded loop reuses [0]
     // every frame and must not pay for a second pipeline and instance buffer.
@@ -93,6 +110,7 @@ struct App::Impl {
     std::vector<App::UpdateFn> updateFns;
     std::vector<App::UpdateFn> fixedUpdateFns;
     std::vector<App::RenderFn> renderFns;
+    std::vector<App::RenderFn> uiFns;
     std::vector<App::StartFn>  shutdownFns;
 
     std::vector<std::unique_ptr<IPlugin>> plugins;
@@ -202,9 +220,14 @@ App::App(AppConfig config) : m_impl(std::make_unique<Impl>()) {
     const rhi::Format sceneFormat = config.postProcess ? kHdrFormat : s.swapchain->format();
     s.slots[0].batch =
         std::make_unique<renderer::SpriteBatch>(*s.device, sceneFormat, config.maxSprites);
-    if (config.threadedSimulation)
+    s.slots[0].uiBatch = std::make_unique<renderer::SpriteBatch>(
+        *s.device, s.swapchain->format(), config.maxUiSprites);
+    if (config.threadedSimulation) {
         s.slots[1].batch =
             std::make_unique<renderer::SpriteBatch>(*s.device, sceneFormat, config.maxSprites);
+        s.slots[1].uiBatch = std::make_unique<renderer::SpriteBatch>(
+            *s.device, s.swapchain->format(), config.maxUiSprites);
+    }
 
     if (config.postProcess) {
         s.graph = std::make_unique<renderer::RenderGraph>(*s.device);
@@ -253,6 +276,11 @@ App& App::onFixedUpdate(UpdateFn fn) {
 }
 App& App::onRender(RenderFn fn) {
     if (fn) m_impl->renderFns.push_back(std::move(fn));
+    return *this;
+}
+
+App& App::onUi(RenderFn fn) {
+    if (fn) m_impl->uiFns.push_back(std::move(fn));
     return *this;
 }
 App& App::onShutdown(StartFn fn) {
@@ -514,10 +542,40 @@ void App::simulate(u32 slotIndex) {
     if (!slot.items.empty()) slot.batch->submit(slot.items.data(), slot.items.size());
     for (const auto& fn : s.renderFns) fn(*this, *slot.batch);
 
+    // The overlay, in framebuffer pixels with the origin at the centre. Built every frame
+    // from the CURRENT size, so a resized window moves the HUD with it and no game has to
+    // notice the resize.
+    slot.uiBatch->begin(uiProjection(static_cast<f32>(s.lastWidth), static_cast<f32>(s.lastHeight)));
+    for (const auto& fn : s.uiFns) fn(*this, *slot.uiBatch);
+
     s.simEnd = std::chrono::steady_clock::now();
     const std::chrono::duration<f32, std::milli> dt = s.simEnd - t0;
     s.simMs = dt.count();
 }
+
+namespace {
+
+// readTexture hands back the backbuffer in the swapchain's OWN format, and writePng
+// wants RGBA8 — so which channels need swapping depends on what the surface negotiated.
+// Hard-coding the BGRA case is wrong on any surface that reports RGBA first, and the
+// symptom (a blue sky comes out orange) points nowhere near this function.
+void captureBackbuffer(rhi::IGraphicsDevice& device, rhi::TextureHandle backbuffer, u32 width,
+                       u32 height, rhi::Format format, const std::string& path) {
+    std::vector<u8> pixels(static_cast<usize>(width) * height * 4);
+    device.readTexture(backbuffer, pixels.data());
+
+    if (format == rhi::Format::B8G8R8A8_UNORM || format == rhi::Format::B8G8R8A8_SRGB)
+        for (usize i = 0; i < pixels.size(); i += 4) std::swap(pixels[i], pixels[i + 2]);
+
+    if (assets::writePng(path.c_str(), width, height, pixels.data()))
+        VORTEX_INFO("App", "Screenshot written to %s (%ux%u)", path.c_str(), width, height);
+    else
+        VORTEX_ERROR("App", "Could not write screenshot to %s", path.c_str());
+}
+
+}   // namespace
+
+void App::requestScreenshot(std::string path) { m_impl->screenshotPath = std::move(path); }
 
 // The GPU half. Main thread only, always: it owns the device, the swapchain and every
 // upload. It reads `slot` — which the game thread has finished with — and the Scene not at
@@ -573,6 +631,20 @@ void App::render(u32 slotIndex) {
 
         s.post->addPasses(*s.graph, sceneHdr, backbuffer, frame.width, frame.height,
                           s.config.post);
+
+        // LoadOp::Load, not Clear: post has already written the backbuffer and the overlay
+        // is drawing on top of it. This pass is also why the ui batcher is built for the
+        // swapchain's format while the world's is built for the HDR target's.
+        s.graph->addPass("ui",
+            [&](renderer::RenderGraph::PassBuilder& b) {
+                b.writeColor(backbuffer, clearColor, rhi::LoadOp::Load);
+            },
+            [&](rhi::ICommandList& cmd) {
+                cmd.setViewport(viewport);
+                cmd.setScissor(0, 0, frame.width, frame.height);
+                slot.uiBatch->end(cmd);
+            });
+
         s.graph->execute(*frame.cmd);
     } else {
         rhi::RenderPassDesc pass;
@@ -589,11 +661,18 @@ void App::render(u32 slotIndex) {
         frame.cmd->setViewport(viewport);
         frame.cmd->setScissor(0, 0, frame.width, frame.height);
         slot.batch->end(*frame.cmd);
+        slot.uiBatch->end(*frame.cmd);   // same target and format: no second pass needed
         frame.cmd->endRenderPass();
     }
 
     s.device->endFrame();
     s.lastDrawCalls = slot.batch->drawCallCount();
+
+    if (!s.screenshotPath.empty()) {
+        captureBackbuffer(*s.device, frame.backbuffer, frame.width, frame.height,
+                          s.swapchain->format(), s.screenshotPath);
+        s.screenshotPath.clear();
+    }
 
     s.renderEnd = std::chrono::steady_clock::now();
     const std::chrono::duration<f32, std::milli> dt = s.renderEnd - t0;

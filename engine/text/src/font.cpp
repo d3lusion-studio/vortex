@@ -8,9 +8,53 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <stb_truetype.h>
 
+#include <cstdlib>
 #include <vector>
 
 namespace vortex::text {
+
+namespace {
+
+// Where a desktop keeps its fonts. Ordered so the result is the same everywhere it can
+// be: DejaVu first (it is what most Linux distributions ship and what the examples were
+// written against), then the usual fallbacks, then the other platforms.
+constexpr const char* kFontSearchPaths[] = {
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+};
+
+}   // namespace
+
+std::string Font::defaultPath(pf::IFileSystem& fs) {
+    // The environment wins: it is how a container without any of the paths below, or a
+    // developer who wants a specific face, says so without touching code.
+    if (const char* env = std::getenv("VORTEX_FONT_PATH"))
+        if (fs.exists(env)) return env;
+
+    for (const char* path : kFontSearchPaths)
+        if (fs.exists(path)) return path;
+    return {};
+}
+
+std::unique_ptr<Font> Font::loadDefault(rhi::IGraphicsDevice& device, pf::IFileSystem& fs,
+                                        f32 pixelHeight) {
+    const std::string path = defaultPath(fs);
+    if (path.empty()) {
+        VORTEX_WARN("Font", "No system font found. Set VORTEX_FONT_PATH to pick one.");
+        return nullptr;
+    }
+    return loadFromFile(device, fs, path.c_str(), pixelHeight);
+}
 
 std::unique_ptr<Font> Font::loadFromFile(rhi::IGraphicsDevice& device, pf::IFileSystem& fs,
                                          const char* path, f32 pixelHeight) {

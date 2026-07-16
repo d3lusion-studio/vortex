@@ -7,6 +7,7 @@
 #include "vortex/renderer/culling.hpp"
 #include "vortex/renderer/sprite_batch.hpp"
 
+#include <cmath>
 #include <functional>
 
 namespace vortex::ecs {
@@ -38,12 +39,21 @@ renderer::RenderItem makeItem(const WorldTransform2D& world, const SpriteComp& s
     local.at(0, 3) = offset.x;
     local.at(1, 3) = offset.y;
 
+    // Y-sorting reads the entity's world position — element (1, 3) of its matrix, which
+    // is where updateTransforms has just put it — rather than its local Transform2D, so
+    // a sprite parented to something else still sorts where it actually ends up.
+    i32 layer = sprite.layer;
+    if (sprite.ySort) {
+        const f32 worldY = world.matrix.at(1, 3) + sprite.ySortOffset;
+        layer -= static_cast<i32>(std::lround(worldY));
+    }
+
     return {
         .transform = world.matrix * local,
         .color     = sprite.color,
         .uv        = renderer::flippedUV(sprite.uv, sprite.flipX, sprite.flipY),
         .texture   = sprite.texture,
-        .layer     = sprite.layer,
+        .layer     = layer,
         .sampler   = sprite.sampler,
     };
 }

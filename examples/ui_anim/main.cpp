@@ -37,25 +37,7 @@
 
 using namespace vortex;
 
-#ifndef VORTEX_FONT_PATH
-#define VORTEX_FONT_PATH "/usr/share/fonts/TTF/DejaVuSans.ttf"
-#endif
-
 namespace {
-
-std::string findFont(pf::IFileSystem& fs) {
-    const char* candidates[] = {
-        VORTEX_FONT_PATH,
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-    };
-    for (const char* c : candidates)
-        if (fs.exists(c)) return c;
-    return {};
-}
 
 struct Named {
     easing::Ease curve;
@@ -100,7 +82,7 @@ int main() {
 
     renderer::SpriteBatch batch(*device, swapchain->format(), 16384);
 
-    const std::string fontPath = findFont(*fs);
+    const std::string fontPath = text::Font::defaultPath(*fs);
     if (fontPath.empty()) {
         VORTEX_ERROR("App", "No usable system font found; set VORTEX_FONT_PATH.");
         return 1;

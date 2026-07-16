@@ -2,13 +2,14 @@
 #include "vortex/core/math/vec2.hpp"
 #include "vortex/core/math/color.hpp"
 #include "vortex/core/math/vec4.hpp"
+#include "vortex/core/math/rect.hpp"
 #include "vortex/core/types.hpp"
+#include "vortex/renderer/sprite_batch.hpp"
 #include "vortex/rhi/rhi_handle.hpp"
 
 #include <string_view>
 
 namespace vortex::rhi { class IGraphicsDevice; }
-namespace vortex::renderer { class SpriteBatch; }
 namespace vortex::text { class Font; }
 
 namespace vortex::ui {
@@ -18,6 +19,17 @@ struct InputState {
     bool down     = false;   // button currently held
     bool pressed  = false;   // went down this frame
     bool released = false;   // went up this frame
+};
+
+// One skinned surface: a window onto a texture, plus the insets that keep its border
+// from smearing when it is stretched. Leave `texture` unset and the widget falls back to
+// the flat colour beside it.
+struct Skin {
+    rhi::TextureHandle  texture;
+    Rect                uv = kFullUV;
+    renderer::NineSlice slice;
+
+    [[nodiscard]] bool valid() const noexcept { return texture.valid() && slice.valid(); }
 };
 
 // Colours are LINEAR light, like every colour the renderer takes. Authoring them through
@@ -32,6 +44,20 @@ struct Style {
     Vec4 text    = Color::fromRgb(0xEBEFFA);
     f32  textScale = 1.0f;
     i32  baseLayer = 1000;   // UI draws on top of game sprites by default
+
+    // Optional art. Set these and panel()/button() draw the pack's own 9-patch instead
+    // of a flat rectangle; the colours above then tint it, so a disabled button is still
+    // one assignment rather than a second texture.
+    //
+    // A widget with a skin ignores its flat colour only for the FILL — the tint still
+    // applies, which is what makes hovered/active work without three more textures.
+    Skin panelSkin;
+    Skin buttonSkin;
+    Skin buttonHoveredSkin;   // falls back to buttonSkin when unset
+    Skin buttonActiveSkin;    // falls back to buttonHoveredSkin, then buttonSkin
+
+    // Pixel art wants Nearest; the default flat skin has no texture to filter.
+    renderer::SpriteSampler sampler = renderer::SpriteSampler::LinearClamp;
 };
 
 // Retained-nothing immediate-mode UI. Widgets are identified by call order, so
@@ -62,7 +88,7 @@ public:
     Style style;
 
 private:
-    void fillRect(Vec2 center, Vec2 size, Vec4 color);
+    void fillRect(Vec2 center, Vec2 size, Vec4 color, const Skin& skin);
     void drawCentered(std::string_view text, Vec2 center);
     [[nodiscard]] bool hot(Vec2 center, Vec2 size) const;
     [[nodiscard]] Vec2 nextSlot();

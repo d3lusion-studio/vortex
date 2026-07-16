@@ -7,8 +7,23 @@
 #include "vortex/text/text_renderer.hpp"
 
 #include <cmath>
+#include <initializer_list>
 
 namespace vortex::ui {
+
+namespace {
+
+// The first skin in the chain that has art, so a Style that only fills in buttonSkin
+// still gets a hovered and an active state. Takes the chain as a list rather than a fixed
+// arity: the states are two and three deep, and padding the short one by repeating an
+// argument reads like a typo.
+const Skin& firstValid(std::initializer_list<const Skin*> chain) {
+    for (const Skin* skin : chain)
+        if (skin->valid()) return *skin;
+    return **(chain.end() - 1);
+}
+
+}   // namespace
 
 UI::UI(rhi::IGraphicsDevice& device) : m_device(device) {
     const u8 px[4] = {255, 255, 255, 255};
@@ -33,8 +48,23 @@ void UI::end() {
     m_font  = nullptr;
 }
 
-void UI::fillRect(Vec2 center, Vec2 size, Vec4 color) {
-    m_batch->drawSprite(m_white, center, size, color, kFullUV, style.baseLayer);
+// The one fill path for every widget. With no skin it is a tinted white pixel — what
+// this UI always was; with one it is the skin's 9-patch, tinted the same way, so a
+// hovered button is still just a different colour and not a different code path.
+void UI::fillRect(Vec2 center, Vec2 size, Vec4 color, const Skin& skin) {
+    if (!skin.valid()) {
+        m_batch->drawSprite(m_white, center, size, color, kFullUV, style.baseLayer);
+        return;
+    }
+
+    const renderer::Sprite sprite{.position = center,
+                                  .size     = size,
+                                  .color    = color,
+                                  .uv       = skin.uv,
+                                  .texture  = skin.texture,
+                                  .layer    = style.baseLayer,
+                                  .sampler  = style.sampler};
+    m_batch->drawNineSlice(sprite, skin.slice);
 }
 
 void UI::drawCentered(std::string_view text, Vec2 center) {
@@ -50,7 +80,9 @@ bool UI::hot(Vec2 center, Vec2 size) const {
            std::fabs(m_input.mouse.y - center.y) <= size.y * 0.5f;
 }
 
-void UI::panel(Vec2 center, Vec2 size, Vec4 color) { fillRect(center, size, color); }
+void UI::panel(Vec2 center, Vec2 size, Vec4 color) {
+    fillRect(center, size, color, style.panelSkin);
+}
 
 void UI::label(Vec2 center, std::string_view text, Vec4 color) {
     const Vec2 extent = m_font->measure(text);
@@ -68,10 +100,19 @@ bool UI::button(Vec2 center, Vec2 size, std::string_view label) {
     if (m_input.pressed && hovered) m_active = id;
     const bool clicked = m_input.released && m_active == id && hovered;
 
-    Vec4 color = style.button;
-    if (hovered) color = (m_active == id && m_input.down) ? style.active : style.hovered;
+    const bool held = hovered && m_active == id && m_input.down;
 
-    fillRect(center, size, color);
+    Vec4 color = style.button;
+    if (hovered) color = held ? style.active : style.hovered;
+
+    // Fall back down the chain, so skinning only the base state is enough to skin the
+    // whole button and the tint carries the state.
+    const Skin& skin =
+        held    ? firstValid({&style.buttonActiveSkin, &style.buttonHoveredSkin, &style.buttonSkin})
+      : hovered ? firstValid({&style.buttonHoveredSkin, &style.buttonSkin})
+                : style.buttonSkin;
+
+    fillRect(center, size, color, skin);
     drawCentered(label, center);
     return clicked;
 }

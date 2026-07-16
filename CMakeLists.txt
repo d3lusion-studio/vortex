@@ -21,6 +21,7 @@ include(VortexModule)
 include(VortexEmbed)
 
 option(VORTEX_BUILD_EXAMPLES "Build Vortex example" ${PROJECT_IS_TOP_LEVEL})
+option(VORTEX_BUILD_GAMES "Build the games built on Vortex" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_BUILD_TOOLS "Build Vortex tools (asset cooker, ...)" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_BUILD_TESTS "Build Vortex test" ${PROJECT_IS_TOP_LEVEL})
 option(VORTEX_INSTALL "Generate install/export rules" ${PROJECT_IS_TOP_LEVEL})
@@ -42,6 +43,10 @@ add_subdirectory(engine)
 
 if(VORTEX_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(VORTEX_BUILD_GAMES)
+    add_subdirectory(games)
 endif()
 
 if(VORTEX_BUILD_TOOLS)

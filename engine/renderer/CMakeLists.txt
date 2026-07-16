@@ -25,6 +25,8 @@ vortex_embed_shader(blur.frag       blur_frag_spv       _blur_header)
 vortex_embed_shader(composite.frag  composite_frag_spv  _composite_header)
 vortex_embed_shader(tonemap.frag    tonemap_frag_spv    _tonemap_header)
 vortex_embed_shader(fxaa.frag       fxaa_frag_spv       _fxaa_header)
+vortex_embed_shader(line3d.vert     line3d_vert_spv     _line3d_vert_header)
+vortex_embed_shader(line3d.frag     line3d_frag_spv     _line3d_frag_header)
 
 vortex_add_module(renderer
     SOURCES
@@ -39,6 +41,7 @@ vortex_add_module(renderer
         src/mesh.cpp
         src/skinning.cpp
         src/post_process.cpp
+        src/gizmos3d.cpp
         ${_vert_header}
         ${_frag_header}
         ${_mesh2d_vert_header}
@@ -64,6 +67,8 @@ vortex_add_module(renderer
         ${_composite_header}
         ${_tonemap_header}
         ${_fxaa_header}
+        ${_line3d_vert_header}
+        ${_line3d_frag_header}
     PUBLIC_DEPS
         Vortex::core
         Vortex::rhi

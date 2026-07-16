@@ -27,24 +27,7 @@
 
 using namespace vortex;
 
-#ifndef VORTEX_FONT_PATH
-#define VORTEX_FONT_PATH "/usr/share/fonts/TTF/DejaVuSans.ttf"
-#endif
-
 namespace {
-
-std::string findFont(pf::IFileSystem& fs) {
-    const char* candidates[] = {
-        VORTEX_FONT_PATH,
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-    };
-    for (const char* c : candidates)
-        if (fs.exists(c)) return c;
-    return {};
-}
 
 template <class T>
 void appendLE(std::vector<u8>& out, T value) {
@@ -92,7 +75,7 @@ int main() {
 
     renderer::SpriteBatch batch(*device, swapchain->format(), 8192);
 
-    const std::string fontPath = findFont(*fs);
+    const std::string fontPath = text::Font::defaultPath(*fs);
     if (fontPath.empty()) { VORTEX_ERROR("Demo", "No system font found."); return 1; }
     auto font = text::Font::loadFromFile(*device, *fs, fontPath.c_str(), 24.0f);
     if (!font) return 1;

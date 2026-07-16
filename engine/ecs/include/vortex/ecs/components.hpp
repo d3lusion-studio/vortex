@@ -37,6 +37,21 @@ struct SpriteComp {
     Vec2               size{1.0f, 1.0f};   // local quad size before transform
     i32                layer = 0;          // painter order
 
+    // Depth-sort by world position instead of by hand: with this on, the drawn order is
+    // `layer` MINUS the entity's world y, so a sprite lower down the screen covers one
+    // further up. It is what makes a top-down scene look solid — the player walks behind
+    // a tree whose trunk is below them and in front of one above — and every such game
+    // otherwise re-writes `sprite.layer = -position.y` in its own update loop.
+    //
+    // `layer` keeps working as a band while this is on: leave it at 0 for anything
+    // standing on the ground, and give a whole class of sprites (a flying thing, a
+    // ground decal) a constant to lift it clear of the sort.
+    bool ySort = false;
+
+    // Where the sprite's "feet" are, relative to its origin. A tree drawn from its base
+    // sorts on its base; one drawn from its centre wants -halfHeight here.
+    f32 ySortOffset = 0.0f;
+
     // Which point of the quad sits on the entity's position, in unit coordinates:
     // (0,0) is the bottom-left corner, (1,1) the top-right, (0.5,0.5) the centre.
     // It is also what the sprite rotates and scales about, so a character standing

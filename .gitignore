@@ -16,6 +16,9 @@
 /cooked/
 /tools/output/
 
+# farm_rpg writes its save next to wherever it was run from
+farmrpg_save.txt
+
 *.tracy
 
 *.log
@@ -31,3 +34,5 @@ desktop.ini
 /compile_commands.json
 
 /cmake-build-debug/
+
+/assets/2d/FarmRPG

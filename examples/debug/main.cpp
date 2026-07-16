@@ -18,24 +18,7 @@
 
 using namespace vortex;
 
-#ifndef VORTEX_FONT_PATH
-#define VORTEX_FONT_PATH "/usr/share/fonts/TTF/DejaVuSans.ttf"
-#endif
-
 namespace {
-std::string findFont(pf::IFileSystem& fs) {
-    const char* candidates[] = {
-        VORTEX_FONT_PATH,
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-    };
-    for (const char* c : candidates)
-        if (fs.exists(c)) return c;
-    return {};
-}
 }
 
 int main() {
@@ -52,7 +35,7 @@ int main() {
 
     renderer::SpriteBatch batch(*device, swapchain->format(), 16384);
 
-    const std::string fontPath = findFont(*fs);
+    const std::string fontPath = text::Font::defaultPath(*fs);
     std::unique_ptr<text::Font> font;
     if (!fontPath.empty())
         font = text::Font::loadFromFile(*device, *fs, fontPath.c_str(), 22.0f);

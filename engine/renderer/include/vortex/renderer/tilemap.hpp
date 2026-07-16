@@ -99,6 +99,80 @@ private:
     std::vector<TileId> m_tiles;   // row-major, m_width * m_height
 };
 
+// --- Autotiling ---------------------------------------------------------------
+//
+// A "blob" set draws one terrain in all 47 shapes it can take against its neighbours —
+// the outside corners, the edges, the inside corners — so a patch of it has a rounded
+// border instead of a sawn-off square one. Painting those by hand is what autotiling
+// exists to avoid: the game says WHERE the terrain is, and the set says which cell that
+// makes each cell.
+//
+// The bits of a neighbour mask. Diagonals only ever count when both of their edges do,
+// which is exactly what collapses 256 combinations down to the 47 a blob set draws.
+enum BlobBits : u8 {
+    BlobN  = 1u << 0, BlobE  = 1u << 1, BlobS  = 1u << 2, BlobW  = 1u << 3,
+    BlobNE = 1u << 4, BlobSE = 1u << 5, BlobSW = 1u << 6, BlobNW = 1u << 7,
+};
+
+// Which of the eight neighbours of (tx, ty) are the same terrain, canonicalised.
+// `same` is asked about coordinates that may be off the map — answer for the edge
+// however the terrain should behave there (usually false).
+template <typename SameFn>
+[[nodiscard]] u8 blobMask(i32 tx, i32 ty, SameFn&& same) {
+    u8 mask = 0;
+    if (same(tx, ty - 1)) mask |= BlobN;
+    if (same(tx + 1, ty)) mask |= BlobE;
+    if (same(tx, ty + 1)) mask |= BlobS;
+    if (same(tx - 1, ty)) mask |= BlobW;
+    if ((mask & BlobN) && (mask & BlobE) && same(tx + 1, ty - 1)) mask |= BlobNE;
+    if ((mask & BlobS) && (mask & BlobE) && same(tx + 1, ty + 1)) mask |= BlobSE;
+    if ((mask & BlobS) && (mask & BlobW) && same(tx - 1, ty + 1)) mask |= BlobSW;
+    if ((mask & BlobN) && (mask & BlobW) && same(tx - 1, ty - 1)) mask |= BlobNW;
+    return mask;
+}
+
+// A blob set: for every one of the 256 masks, which cell of the tileset draws it.
+//
+// The table is a property of the ART, not of this engine — packs order their cells
+// differently — so it is supplied rather than assumed. Deriving it beats transcribing
+// it: read each cell's edge pixels, ask which neighbours it was drawn to meet, and check
+// that the 47 reachable masks come back exactly once.
+struct BlobSet {
+    // 256 entries: the mask's cell, numbered within the MODULE, row-major.
+    const u8* cells = nullptr;
+
+    TileId firstCell = 0;   // the TileId of the module's top-left cell
+
+    // A blob module is almost never the whole page — a 12x4 block sits in the corner of a
+    // 24x8 sheet, next to the same terrain in another colour. So a module-local cell has
+    // to be re-based onto the page's stride: without this, cell 12 (the module's second
+    // row) lands on the page's *first* row, twelve columns across, and the map fills with
+    // pieces of the wrong tile.
+    u32 moduleColumns = 12;
+    u32 pageColumns   = 12;
+
+    [[nodiscard]] bool valid() const noexcept { return cells != nullptr && moduleColumns > 0; }
+
+    [[nodiscard]] TileId tile(u8 mask) const noexcept {
+        const u32 cell = cells[mask];
+        const u32 row  = cell / moduleColumns;
+        const u32 col  = cell % moduleColumns;
+        return firstCell + static_cast<TileId>(row * pageColumns + col);
+    }
+};
+
+// Repaint every cell of `layer` from a boolean grid: `present(tx, ty)` says whether the
+// terrain is there, and cells it is not are cleared to kEmptyTile.
+template <typename PresentFn>
+void applyBlobSet(TileLayer& layer, const BlobSet& set, PresentFn&& present) {
+    if (!set.valid()) return;
+    const auto same = [&](i32 x, i32 y) { return present(x, y); };
+    for (i32 ty = 0; ty < static_cast<i32>(layer.height()); ++ty)
+        for (i32 tx = 0; tx < static_cast<i32>(layer.width()); ++tx)
+            layer.setTile(tx, ty, present(tx, ty) ? set.tile(blobMask(tx, ty, same))
+                                                  : kEmptyTile);
+}
+
 // A stack of layers plus the tile flags they share. This is the level.
 class Tilemap {
 public:

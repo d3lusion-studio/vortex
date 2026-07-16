@@ -44,6 +44,11 @@ struct AppConfig {
 
     u32 maxSprites = 100000;
 
+    // The onUi() overlay's own budget. Separate from maxSprites, and far smaller,
+    // because a HUD is tens of quads while a world is tens of thousands — and the two
+    // are different draw lists with different pipelines, so they cannot share one.
+    u32 maxUiSprites = 8192;
+
     // Fifo (the default) is vsync: present blocks until the display is ready, which caps the
     // frame rate at the refresh rate and is what a shipped game wants. Immediate does not
     // block — use it to benchmark, because with vsync on, the loop's wall clock measures the
@@ -148,6 +153,20 @@ public:
     App& onUpdate(UpdateFn fn);        // variable rate, once per frame
     App& onFixedUpdate(UpdateFn fn);   // fixed rate, 0..N times per frame
     App& onRender(RenderFn fn);        // extra sprites, batched with the scene's
+
+    // The screen-space overlay: a HUD, a menu, anything that belongs to the viewport
+    // rather than to the world.
+    //
+    // The batch handed here is bound to the framebuffer in PIXELS, origin at the centre,
+    // +y up — so (0, 0) is the middle of the screen and {-halfW + 8, halfH - 8} is eight
+    // pixels in from the top-left corner, whatever the camera is doing. Without this,
+    // every HUD element on a zoomed or scrolling camera has to be converted back out of
+    // world space by hand, which is scaffolding no game should be writing.
+    //
+    // Drawn after the world and, with postProcess on, after tone mapping — so the HUD is
+    // never bloomed or graded. `layer` still sorts within the overlay.
+    App& onUi(RenderFn fn);
+
     App& onShutdown(StartFn fn);
 
     // --- Plugins ---------------------------------------------------------------
@@ -243,6 +262,20 @@ public:
     // Whether post-processing exists at all is fixed at construction (the pipelines are
     // built for the target's format), so this is null unless AppConfig::postProcess was on.
     [[nodiscard]] renderer::PostProcess::Settings* postSettings();
+
+    // Write the next presented frame to `path` as a PNG. The capture happens after the
+    // frame is submitted, so it is exactly what the player saw — post-processing, UI
+    // and all — rather than a re-render that might not match.
+    //
+    // Costs a full GPU stall (readTexture waits for idle), so this is for screenshots
+    // and render tests, never a per-frame path. Requesting again before the pending
+    // capture fires replaces it: at most one frame is ever written per request.
+    //
+    // Main thread only, like the other device-touching calls: with threadedSimulation on,
+    // an update hook runs on the game thread while render() is reading this request, and
+    // the two would race. Call it from onStart, or from a hook only when the loop is
+    // single-threaded.
+    void requestScreenshot(std::string path);
 
     [[nodiscard]] f32   time()      const;   // seconds since run() began
     [[nodiscard]] f32   deltaTime() const;   // clamped to maxFrameTime
