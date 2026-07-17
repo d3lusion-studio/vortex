@@ -40,6 +40,10 @@ struct CharacterLook {
     i32         toolTint  = 1;          // Weapons/<tool>/1..10.png
 };
 
+// The animation event a tool swing fires when it connects. The clips carry it; gameplay
+// listens for it.
+inline constexpr const char* kHitEvent = "hit";
+
 // One clip per facing, indexed by Dir.
 struct DirClips {
     renderer::AnimationHandle byDir[4]{};

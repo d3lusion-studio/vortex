@@ -335,3 +335,8 @@ vortex_embed_asset(assets_demo
               assets_demo/fallback.pal
     NAMES     meme1.png
               fallback.pal)
+
+# Headless: A* over a tile grid — walls, doors, corner-cutting, dead ends and the search
+# budget. No window or GPU, so it is a CI check for the pathfinder.
+add_executable(pathfinding pathfinding/main.cpp)
+target_link_libraries(pathfinding PRIVATE Vortex::vortex)

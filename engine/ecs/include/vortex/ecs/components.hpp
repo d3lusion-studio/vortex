@@ -94,20 +94,29 @@ struct SpriteAnimator {
     bool playing  = true;
     bool finished = false;   // latched on the last frame of a non-looping clip
 
+    // True until the animation system has shown a frame of the current clip.
+    //
+    // Without it, "entered a new frame" is `frame != lastFrame` — and a clip that starts on
+    // frame 0 never enters frame 0, so an event authored there (the footfall a walk cycle
+    // begins on) is silently skipped on the first lap and every restart.
+    bool freshClip = true;
+
     void play(renderer::AnimationHandle next) {
         if (clip == next) return;
-        clip     = next;
-        time     = 0.0f;
-        frame    = 0;
-        playing  = true;
-        finished = false;
+        clip      = next;
+        time      = 0.0f;
+        frame     = 0;
+        playing   = true;
+        finished  = false;
+        freshClip = true;
     }
 
     void restart() {
-        time     = 0.0f;
-        frame    = 0;
-        playing  = true;
-        finished = false;
+        time      = 0.0f;
+        frame     = 0;
+        playing   = true;
+        finished  = false;
+        freshClip = true;
     }
 };
 

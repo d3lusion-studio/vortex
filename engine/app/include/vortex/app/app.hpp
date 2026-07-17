@@ -17,12 +17,12 @@
 #include <memory>
 
 namespace vortex::pf      { class IWindow; class IInputProvider; class IClock; class IFileSystem; }
-namespace vortex::rhi     { class IGraphicsDevice; }
+namespace vortex::rhi     { class IGraphicsDevice; class ICommandList; }
 namespace vortex::jobs    { class JobSystem; }
 namespace vortex::assets  { class AssetManager; }
 namespace vortex::audio   { class IAudioEngine; }
 namespace vortex::physics { class PhysicsWorld; }
-namespace vortex::renderer { class SpriteBatch; class Camera2D; class ParticleWorld; }
+namespace vortex::renderer { class SpriteBatch; class Camera2D; class ParticleWorld; class Lighting2D; }
 
 namespace vortex::app {
 
@@ -43,6 +43,30 @@ struct AppConfig {
     f32 maxFrameTime = 0.25f;
 
     u32 maxSprites = 100000;
+
+    // 2D lighting: an ambient colour the world is multiplied by, with lights added back
+    // into it. Off by default — a scene at full daylight would pay for a buffer and a
+    // full-screen multiply to change nothing.
+    //
+    // See renderer::Lighting2D. Fill lights() each frame; the loop renders them between the
+    // world and the onUi() overlay, so the HUD never goes dark with the world.
+    bool lighting2D    = false;
+    u32  maxLights     = 1024;
+    // Fraction of the framebuffer the light buffer is rendered at. Light is low frequency,
+    // so a quarter of the pixels is four times less fill and reads the same.
+    f32  lightBufferScale = 0.5f;
+
+    // Re-load assets whose file changed on disk, while the game runs. Edit a sprite in
+    // Aseprite, save, and it is in the running game — which is the difference between
+    // tuning art in seconds and in build cycles.
+    //
+    // Off by default: the poll stats every loaded asset's file, so it is a developer tool
+    // and not something a shipped build should be paying for. AssetManager has done the
+    // work since it was written; nothing was calling it from the loop.
+    bool hotReloadAssets = false;
+    // Seconds between polls. Every frame would stat every asset 60 times a second to catch
+    // an edit a human made; four times a second is imperceptible and ~15x less syscall.
+    f32  hotReloadInterval = 0.25f;
 
     // The onUi() overlay's own budget. Separate from maxSprites, and far smaller,
     // because a HUD is tens of quads while a world is tens of thousands — and the two
@@ -135,6 +159,8 @@ public:
     using StartFn  = std::function<void(App&)>;
     using UpdateFn = std::function<void(App&, f32 dt)>;
     using RenderFn = std::function<void(App&, renderer::SpriteBatch&)>;
+    // Runs on the main thread during command recording — see onRawRender.
+    using RawRenderFn = std::function<void(App&, rhi::ICommandList&)>;
 
     explicit App(AppConfig config = {});
     ~App();
@@ -167,6 +193,17 @@ public:
     // never bloomed or graded. `layer` still sorts within the overlay.
     App& onUi(RenderFn fn);
 
+    // Record straight into the frame's command list, inside the pass that drew everything
+    // else, after the world and the onUi() overlay.
+    //
+    // This is the escape hatch for anything that draws with its OWN pipeline rather than
+    // through a SpriteBatch — an ImGui layer, a custom full-screen effect. Everything the
+    // loop already did is on the target; the pass is open; do not begin another one.
+    //
+    // Main thread only, always: unlike the other hooks this one runs during recording, not
+    // during simulation.
+    App& onRawRender(RawRenderFn fn);
+
     App& onShutdown(StartFn fn);
 
     // --- Plugins ---------------------------------------------------------------
@@ -198,6 +235,13 @@ public:
     [[nodiscard]] ecs::Registry&           registry();
     [[nodiscard]] renderer::Camera2D&      camera();
     [[nodiscard]] renderer::ParticleWorld& particles();
+
+    // The 2D light list for this frame. Null unless AppConfig::lighting2D was set — the
+    // buffer and its pipelines are built at construction, like post-processing.
+    //
+    // Submit into it from a fixed/variable update, not onRender: it is CPU state, and the
+    // loop reads it on the main thread when it records the frame.
+    [[nodiscard]] renderer::Lighting2D* lights();
     [[nodiscard]] pf::IWindow&             window();
 
     // The raw device. Reach for actions() first — a game that reads keys directly
@@ -208,6 +252,11 @@ public:
     // loop, before onFixedUpdate and onUpdate, so every query in a frame agrees.
     [[nodiscard]] pf::InputMap&            actions();
     [[nodiscard]] rhi::IGraphicsDevice&    device();
+
+    // The format of the surface onRawRender() records onto. Anything building its own
+    // pipeline needs it — a pipeline belongs to exactly one target format — and without it
+    // a caller has to guess, which works until the surface is negotiated as BGRA.
+    [[nodiscard]] rhi::Format               surfaceFormat() const;
     [[nodiscard]] assets::AssetManager&    assets();
     [[nodiscard]] pf::IFileSystem&         fileSystem();
     [[nodiscard]] jobs::JobSystem&         jobs();

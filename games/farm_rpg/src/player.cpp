@@ -103,7 +103,7 @@ void facingTile(const GameState& state, i32& tx, i32& ty) {
     World::worldToTile(ahead, tx, ty);
 }
 
-void spawnPlayer(ecs::Scene& scene, const Assets& assets, GameState& state, const World& world) {
+void spawnPlayer(ecs::Scene& scene, const Assets& assets, GameState& state, World& world) {
     const ecs::Entity e = scene.spawn();
     state.player.entity = e;
     state.player.position = world.spawnPoint();
@@ -115,6 +115,16 @@ void spawnPlayer(ecs::Scene& scene, const Assets& assets, GameState& state, cons
         .sampler = renderer::SpriteSampler::NearestClamp});
     scene.registry().emplace<ecs::SpriteAnimator>(e, ecs::SpriteAnimator{
         .clip = assets.clips.idle.byDir[static_cast<usize>(Dir::Down)]});
+
+    // The swing lands when the art says it lands.
+    scene.registry().observe<ecs::SpriteAnimationEvent>(
+        [&scene, &assets, &world, &state](ecs::Trigger<ecs::SpriteAnimationEvent>& t) {
+            if (t.event.entity != state.player.entity) return;
+            if (t.event.name != kHitEvent) return;
+            if (state.player.useApplied || state.player.useTimer <= 0.0f) return;
+            state.player.useApplied = true;
+            applyToolUse(scene, assets, world, state);
+        });
 }
 
 void applyToolUse(ecs::Scene& scene, const Assets& assets, World& world, GameState& state) {
@@ -194,15 +204,11 @@ void updatePlayer(app::App& app, const Assets& assets, World& world, GameState& 
     Player&             p  = state.player;
     pf::IInputProvider& in = app.input();
 
-    // A swing owns the player until it finishes; the effect lands halfway through,
-    // which is where the tool meets the ground in every one of these clips.
+    // A swing owns the player until it finishes. WHEN it lands is not decided here — the
+    // clip carries a "hit" event on the frame the tool meets the ground, and the observer
+    // installed in spawnPlayer applies the effect when the animation says so.
     if (p.useTimer > 0.0f) {
-        const f32 total = swingDuration(assets, p.useItem);
         p.useTimer -= dt;
-        if (!p.useApplied && p.useTimer <= total * 0.5f) {
-            p.useApplied = true;
-            applyToolUse(app.scene(), assets, world, state);
-        }
         if (p.useTimer <= 0.0f) {
             p.useTimer  = 0.0f;
             p.useItem   = kItemNone;

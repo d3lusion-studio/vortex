@@ -27,6 +27,25 @@ bool spriteDrawn(const WorldTransform2D& world, const SpriteComp& sprite, const 
            renderer::quadVisible(world.matrix, sprite.size, sprite.anchorOffset(), *bounds);
 }
 
+// Fire every event on the frames playback stepped THROUGH, not just the one it landed on.
+// A slow frame, or a clip whose fps is higher than the tick rate, advances several frames
+// at once — and an event that only fires when you happen to land on its frame is an event
+// that goes missing exactly when the machine is struggling.
+void emitFramesEntered(Registry& registry, Entity e, const renderer::AnimationClip& clip,
+                       u32 from, u32 to) {
+    const auto count = static_cast<u32>(clip.frames.size());
+    if (count == 0) return;
+
+    u32 frame = from;
+    for (u32 guard = 0; guard < count; ++guard) {   // bounded: a lap at most, wrap included
+        frame = (frame + 1) % count;
+        for (const renderer::AnimationEvent& event : clip.events)
+            if (event.frame == frame)
+                registry.emit(e, SpriteAnimationEvent{.entity = e, .name = event.name, .frame = frame});
+        if (frame == to) break;
+    }
+}
+
 renderer::RenderItem makeItem(const WorldTransform2D& world, const SpriteComp& sprite) {
     // Scale the unit quad to the sprite's size and slide it so the anchor lands on
     // the entity's origin. Both are diagonal-plus-translation, so they are written
@@ -88,7 +107,7 @@ void updateTransforms(Registry& registry) {
 
 void updateSpriteAnimations(Registry& registry, const renderer::AnimationLibrary& library, f32 dt) {
     registry.view<SpriteAnimator, SpriteComp>(
-        [&](Entity, SpriteAnimator& anim, SpriteComp& sprite) {
+        [&](Entity e, SpriteAnimator& anim, SpriteComp& sprite) {
             const renderer::AnimationClip* clip = library.get(anim.clip);
             if (clip == nullptr || clip->frames.empty() || clip->fps <= 0.0f) return;
 
@@ -107,7 +126,22 @@ void updateSpriteAnimations(Registry& registry, const renderer::AnimationLibrary
 
             const auto last  = static_cast<u32>(clip->frames.size() - 1);
             const auto index = static_cast<u32>(anim.time * clip->fps);
-            anim.frame = index < last ? index : last;
+            const u32  next  = index < last ? index : last;
+
+            if (!clip->events.empty()) {
+                if (anim.freshClip) {
+                    // The clip's first shown frame is entered, not stepped into.
+                    for (const renderer::AnimationEvent& event : clip->events)
+                        if (event.frame == next)
+                            registry.emit(e, SpriteAnimationEvent{.entity = e,
+                                                                  .name = event.name,
+                                                                  .frame = next});
+                } else if (next != anim.frame) {
+                    emitFramesEntered(registry, e, *clip, anim.frame, next);
+                }
+            }
+            anim.frame     = next;
+            anim.freshClip = false;
 
             sprite.uv = clip->frames[anim.frame];
             if (clip->texture.valid()) sprite.texture = clip->texture;

@@ -18,6 +18,7 @@
 #include "vortex/physics/physics_world.hpp"
 #include "vortex/platform/window.hpp"
 #include "vortex/renderer/camera2d.hpp"
+#include "vortex/renderer/lighting2d.hpp"
 #include "vortex/renderer/sprite_batch.hpp"
 #include "vortex/rhi/command_list.hpp"
 #include "vortex/rhi/device.hpp"
@@ -92,6 +93,9 @@ struct App::Impl {
     std::unique_ptr<renderer::RenderGraph> graph;
     std::unique_ptr<renderer::PostProcess> post;
 
+    // Only built when AppConfig::lighting2D is on.
+    std::unique_ptr<renderer::Lighting2D> lights;
+
     SceneManager          scenes;
     ecs::SerializeContext serialize;
     pf::InputMap          actions;
@@ -111,6 +115,7 @@ struct App::Impl {
     std::vector<App::UpdateFn> fixedUpdateFns;
     std::vector<App::RenderFn> renderFns;
     std::vector<App::RenderFn> uiFns;
+    std::vector<App::RawRenderFn> rawRenderFns;
     std::vector<App::StartFn>  shutdownFns;
 
     std::vector<std::unique_ptr<IPlugin>> plugins;
@@ -124,6 +129,8 @@ struct App::Impl {
     f32  delta         = 0.0f;
     f32  accumulator   = 0.0f;
     u64  frames        = 0;
+
+    f32 hotReloadTimer = 0.0f;
 
     f64 fpsAccum  = 0.0;
     u32 fpsFrames = 0;
@@ -235,6 +242,15 @@ App::App(AppConfig config) : m_impl(std::make_unique<Impl>()) {
                                                           s.swapchain->format());
     }
 
+    // The composite multiplies over whatever the world was drawn into — the HDR target
+    // when post-processing is on, the backbuffer when it is not. Same reason the ui
+    // batcher is built for the swapchain: a pipeline belongs to one format.
+    if (config.lighting2D) {
+        s.lights = std::make_unique<renderer::Lighting2D>(*s.device, sceneFormat,
+                                                          config.maxLights);
+        s.lights->setResolutionScale(config.lightBufferScale);
+    }
+
     // Scene files name their textures; the asset manager is what turns a name into a
     // handle and back. Capturing the raw pointer is safe: the manager outlives every
     // save or load, both of which only ever run inside this App.
@@ -283,6 +299,11 @@ App& App::onUi(RenderFn fn) {
     if (fn) m_impl->uiFns.push_back(std::move(fn));
     return *this;
 }
+
+App& App::onRawRender(RawRenderFn fn) {
+    if (fn) m_impl->rawRenderFns.push_back(std::move(fn));
+    return *this;
+}
 App& App::onShutdown(StartFn fn) {
     if (fn) m_impl->shutdownFns.push_back(std::move(fn));
     return *this;
@@ -325,6 +346,9 @@ SceneManager&            App::scenes()    { return m_impl->scenes; }
 ecs::Registry&           App::registry()  { return m_impl->scenes.active().registry(); }
 renderer::Camera2D&      App::camera()    { return m_impl->scenes.active().camera; }
 renderer::ParticleWorld& App::particles() { return m_impl->scenes.active().particles; }
+renderer::Lighting2D*    App::lights()    { return m_impl->lights.get(); }
+
+rhi::Format App::surfaceFormat() const { return m_impl->swapchain->format(); }
 pf::IWindow&             App::window()    { return *m_impl->window; }
 pf::IInputProvider&      App::input()     { return *m_impl->input; }
 pf::InputMap&            App::actions()   { return m_impl->actions; }
@@ -589,6 +613,18 @@ void App::render(u32 slotIndex) {
 
     s.assets->beginFrame();   // GPU uploads for whatever the IO threads decoded
 
+    // Pick up edits made on disk while the game runs. Here on the main thread, next to the
+    // uploads, because a reload IS an upload — doing it from the game thread would touch
+    // the device from the one place the thread contract says must not.
+    if (s.config.hotReloadAssets) {
+        s.hotReloadTimer += s.delta;
+        if (s.hotReloadTimer >= s.config.hotReloadInterval) {
+            s.hotReloadTimer = 0.0f;
+            if (const u32 reloaded = s.assets->pollHotReload(); reloaded > 0)
+                VORTEX_INFO("App", "Hot-reloaded %u asset(s)", reloaded);
+        }
+    }
+
     // beginFrame() is where the swapchain blocks — on the frame-in-flight fence, and, with
     // vsync, on the display. Timed apart from the rest so a slow monitor cannot be mistaken
     // for a slow renderer.
@@ -613,6 +649,13 @@ void App::render(u32 slotIndex) {
                                  .width  = static_cast<f32>(frame.width),
                                  .height = static_cast<f32>(frame.height)};
 
+    // The light buffer is a render target of its own, so it has to be filled while no pass
+    // is open — before the world's, not inside it. The composite then lands on top of the
+    // world, inside its pass.
+    if (s.lights)
+        s.lights->buildBuffer(*frame.cmd, s.scenes.active().camera.viewProjection(),
+                              frame.width, frame.height);
+
     if (s.post) {
         // Sprites into an HDR target, then bloom and tone mapping resolve it to the screen.
         s.graph->beginFrame();
@@ -627,6 +670,9 @@ void App::render(u32 slotIndex) {
                 cmd.setViewport(viewport);
                 cmd.setScissor(0, 0, frame.width, frame.height);
                 slot.batch->end(cmd);
+                // Inside the world's pass, so the lighting grades the world and nothing
+                // else — and before tone mapping, so a lit scene still bloom.
+                if (s.lights) s.lights->composite(cmd, frame.width, frame.height);
             });
 
         s.post->addPasses(*s.graph, sceneHdr, backbuffer, frame.width, frame.height,
@@ -643,6 +689,7 @@ void App::render(u32 slotIndex) {
                 cmd.setViewport(viewport);
                 cmd.setScissor(0, 0, frame.width, frame.height);
                 slot.uiBatch->end(cmd);
+                for (const auto& fn : s.rawRenderFns) fn(*this, cmd);
             });
 
         s.graph->execute(*frame.cmd);
@@ -661,7 +708,10 @@ void App::render(u32 slotIndex) {
         frame.cmd->setViewport(viewport);
         frame.cmd->setScissor(0, 0, frame.width, frame.height);
         slot.batch->end(*frame.cmd);
+        // Between the world and the HUD: the farm goes dark at midnight, the clock does not.
+        if (s.lights) s.lights->composite(*frame.cmd, frame.width, frame.height);
         slot.uiBatch->end(*frame.cmd);   // same target and format: no second pass needed
+        for (const auto& fn : s.rawRenderFns) fn(*this, *frame.cmd);
         frame.cmd->endRenderPass();
     }
 

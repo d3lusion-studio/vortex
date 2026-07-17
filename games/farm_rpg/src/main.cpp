@@ -8,7 +8,8 @@
 //   WASD / arrows  walk            Shift  run
 //   1..0           select item     Space / Left click  use held item
 //   E              interact (shop, shipping bin, bed)
-//   F5 / F9        save / load     Esc  quit (autosaves)
+//   F1             debug overlay   F5 / F9  save / load
+//   Esc            quit (autosaves)
 //
 // Run with VORTEX_FARM_CHECK=1 for a headless-ish self-check: it plays a scripted
 // day — till, sow, water, sleep, harvest, ship — and exits non-zero if the loop did
@@ -23,10 +24,13 @@
 
 #include "vortex/app/app.hpp"
 #include "vortex/core/log.hpp"
+#include "vortex/debug/debug_plugin.hpp"
 #include "vortex/core/math/math.hpp"
 #include "vortex/ecs/components.hpp"
 #include "vortex/platform/filesystem.hpp"
 #include "vortex/platform/input.hpp"
+#include "vortex/renderer/camera_controller.hpp"
+#include "vortex/renderer/lighting2d.hpp"
 #include "vortex/renderer/sprite_batch.hpp"
 #include "vortex/text/font.hpp"
 #include "vortex/ui/ui.hpp"
@@ -45,9 +49,17 @@ namespace {
 
 constexpr const char* kSavePath = "farmrpg_save.txt";
 
+// The map in world units. y is negative downward, so the rect starts at the bottom-left.
+const Rect kMapBounds{0.0f, -static_cast<f32>(kMapH) * kTile,
+                      static_cast<f32>(kMapW) * kTile, static_cast<f32>(kMapH) * kTile};
+
 // Everything that is not GameState: the art, the map, and the frame-level services.
 struct Game {
     Assets                      assets;
+    renderer::FollowController2D follow{.halfLife = 0.07f,
+                                        // A window the player can shuffle inside without
+                                        // dragging the whole farm around behind them.
+                                        .deadzone = {10.0f, 8.0f}};
     World                       world;
     GameState                   state;
     std::unique_ptr<text::Font> font;
@@ -72,17 +84,47 @@ struct Game {
 
 // --- Day/night ---------------------------------------------------------------
 //
-// A single tinted quad over the world. Cheap, and at this art scale it reads better
-// than anything physically motivated would: the pixels keep their hues, they just
-// cool down.
-[[nodiscard]] Vec4 nightTint(f32 hour) {
-    // Full daylight until 17:00, then down to deep night by 22:00 and back at 6:00.
+// The ambient colour the world is multiplied by. White is noon; the evening slides it
+// toward a cold blue, which is what makes a warm lamp read as warm without the lamp
+// changing at all.
+[[nodiscard]] Color ambientFor(f32 hour) {
     f32 darkness = 0.0f;
     if (hour >= 17.0f && hour < 22.0f)      darkness = (hour - 17.0f) / 5.0f;
     else if (hour >= 22.0f)                 darkness = 1.0f;
 
-    const f32 alpha = darkness * 0.62f;
-    return Color::fromRgb(0x0E1A3C).withAlpha(alpha);
+    // Never quite black: a farm at midnight you cannot see at all is not atmospheric, it
+    // is a bug report.
+    const Color night = Color::fromRgb(0x2A3560);
+    return {lerp(1.0f, night.r, darkness), lerp(1.0f, night.g, darkness),
+            lerp(1.0f, night.b, darkness), 1.0f};
+}
+
+// The lights the farm puts in the world each frame.
+void submitLights(app::App& app, Game& game) {
+    renderer::Lighting2D* lights = app.lights();
+    if (lights == nullptr) return;
+
+    lights->begin();
+    lights->ambient = ambientFor(game.state.hour());
+
+    // Daylight needs no lamps, and skipping them keeps the buffer free of quads that
+    // could only wash out a scene that is already white.
+    if (game.state.hour() < 16.5f) return;
+
+    // The windows of both buildings.
+    for (const Building* b : {&game.world.house(), &game.world.store()}) {
+        const Vec2 door = World::tileCenter(b->doorTx, b->doorTy);
+        lights->add({.position  = door + Vec2{0.0f, 8.0f},
+                     .radius    = 90.0f,
+                     .color     = Color::fromRgb(0xFFC97A),
+                     .intensity = 1.1f});
+    }
+
+    // The player carries one, so the walk home is playable.
+    lights->add({.position  = game.state.player.position + Vec2{0.0f, 10.0f},
+                 .radius    = 78.0f,
+                 .color     = Color::fromRgb(0xFFE0A0),
+                 .intensity = 1.0f});
 }
 
 void giveStartingKit(GameState& state) {
@@ -290,8 +332,15 @@ int main() {
     config.height     = 720;
     config.clearColor = Color::fromRgb(0x1B2A16);
     config.maxSprites = 40000;   // App honours VORTEX_MAX_FRAMES itself when maxFrames is 0
+    config.lighting2D = true;    // dusk, lit windows, and a lantern to get home by
+    // Save a crop sprite in Aseprite and it is in the running game a quarter-second later.
+    config.hotReloadAssets = true;
 
     app::App app(config);
+    // F1: entity inspector, perf graphs, live counters. One line, because the plugin owns
+    // the wiring.
+    app.addPlugin<debug::OverlayPlugin>();
+
     Game     game;
     game.checkMode = std::getenv("VORTEX_FARM_CHECK") != nullptr;
     if (const char* shot = std::getenv("VORTEX_SCREENSHOT")) game.shotPath = shot;
@@ -358,17 +407,14 @@ int main() {
 
         if (game.checkMode) runScript(a, game, dt);
 
-        // Camera: follow, then snap to whole world units. One world unit is one art
-        // pixel, so an unsnapped camera makes every tile seam shimmer as you walk.
-        const Vec2 target = state.player.position + Vec2{0.0f, 8.0f};
-        Vec2       camera = damp(a.camera().position, target, 10.0f, dt);
+        submitLights(a, game);
 
-        const f32 halfW = static_cast<f32>(a.camera().viewportWidth) * 0.5f / kZoom;
-        const f32 halfH = static_cast<f32>(a.camera().viewportHeight) * 0.5f / kZoom;
-        camera.x = std::clamp(camera.x, halfW, static_cast<f32>(kMapW) * kTile - halfW);
-        camera.y = std::clamp(camera.y, -static_cast<f32>(kMapH) * kTile + halfH, -halfH);
-
-        a.camera().position = {std::round(camera.x), std::round(camera.y)};
+        // Follow, keep the view on the map, then land on the pixel grid. All three are the
+        // engine's; the order matters, because snapping is only true until something else
+        // moves the camera.
+        game.follow.update(a.camera(), state.player.position + Vec2{0.0f, 8.0f}, dt);
+        renderer::clampToBounds(a.camera(), kMapBounds);
+        renderer::snapToPixelGrid(a.camera(), 1.0f / kZoom);
     });
 
     app.onUpdate([&game](app::App& a, f32) {
@@ -405,23 +451,11 @@ int main() {
             beginToolUse(game.assets, game.world, state);
     });
 
-    // The world: batched with the scene, in world units.
+    // The world: batched with the scene, in world units. Night is no longer drawn here —
+    // it is the lighting pass, submitted below and composited by the loop.
     app.onRender([&game](app::App& a, renderer::SpriteBatch& batch) {
         if (!game.ready) return;
-
         drawTileCursor(a, game, batch);
-
-        // Night. This belongs to the world, not the HUD — it darkens the farm and leaves
-        // the clock readable — so it is drawn here, under the overlay.
-        const Vec4 tint = nightTint(game.state.hour());
-        if (tint.w > 0.001f) {
-            batch.draw({.position = a.camera().position,
-                        .size     = {static_cast<f32>(a.camera().viewportWidth) / kZoom,
-                                     static_cast<f32>(a.camera().viewportHeight) / kZoom},
-                        .color    = tint,
-                        .texture  = a.whiteTexture(),
-                        .layer    = 950});
-        }
     });
 
     // The HUD: framebuffer pixels, origin at the centre, drawn over everything above.

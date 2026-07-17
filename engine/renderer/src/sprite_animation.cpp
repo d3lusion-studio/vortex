@@ -7,6 +7,11 @@ AnimationHandle AnimationLibrary::add(AnimationClip clip) {
     return {static_cast<u32>(m_clips.size() - 1), 0u};
 }
 
+void AnimationLibrary::addEvent(AnimationHandle clip, u32 frame, std::string name) {
+    if (!clip.valid() || clip.index >= m_clips.size()) return;
+    m_clips[clip.index].events.push_back({frame, std::move(name)});
+}
+
 AnimationHandle AnimationLibrary::addFromSheet(const SpriteSheet& sheet, u32 firstFrame, u32 count,
                                                f32 fps, bool loop) {
     AnimationClip clip;

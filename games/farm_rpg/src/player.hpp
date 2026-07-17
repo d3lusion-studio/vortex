@@ -11,9 +11,10 @@ namespace vortex::ecs { class Scene; }
 
 namespace farm {
 
-// Create the player entity with its sprite and animator.
+// Creates the player entity, and installs the observer that turns the swing clips' "hit"
+// event into a change in the world.
 void spawnPlayer(vortex::ecs::Scene& scene, const Assets& assets, GameState& state,
-                 const World& world);
+                 World& world);
 
 // Read input, move, and start swings. Runs at the fixed rate.
 void updatePlayer(vortex::app::App& app, const Assets& assets, World& world, GameState& state,

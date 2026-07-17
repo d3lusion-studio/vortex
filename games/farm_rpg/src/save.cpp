@@ -12,14 +12,14 @@ namespace farm {
 using namespace vortex;
 
 namespace {
-constexpr int kSaveVersion = 2;   // 2 added FarmTile::everRipe
+constexpr int kSaveVersion = 3;   // 2 added FarmTile::everRipe, 3 the time of day
 }
 
 bool saveGame(pf::IFileSystem& fs, const char* path, const GameState& state) {
     std::ostringstream out;
     out << "farmrpg " << kSaveVersion << '\n'
         << state.day << ' ' << static_cast<i32>(state.season) << ' ' << state.year << ' '
-        << state.money << ' ' << state.player.energy << '\n'
+        << state.money << ' ' << state.player.energy << ' ' << state.clock << '\n'
         << state.player.position.x << ' ' << state.player.position.y << '\n';
 
     for (const Slot& slot : state.inventory.slots)
@@ -81,9 +81,13 @@ bool loadGame(pf::IFileSystem& fs, const char* path, GameState& state) {
 
     GameState loaded;
     i32       season = 0;
-    if (!(in >> loaded.day >> season >> loaded.year >> loaded.money >> loaded.player.energy))
+    // The clock too: without it a game saved at dusk reloads at dawn, which quietly hands
+    // the player a free day.
+    if (!(in >> loaded.day >> season >> loaded.year >> loaded.money >> loaded.player.energy >>
+          loaded.clock))
         return false;
     if (season < 0 || season >= static_cast<i32>(Season::Count)) return false;
+    loaded.clock = std::clamp(loaded.clock, 0.0f, kDayLengthSeconds);
     loaded.season = static_cast<Season>(season);
 
     if (!(in >> loaded.player.position.x >> loaded.player.position.y)) return false;

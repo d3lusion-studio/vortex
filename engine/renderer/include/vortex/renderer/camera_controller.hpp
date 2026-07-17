@@ -118,6 +118,25 @@ public:
     void update(Camera2D&, Vec2 target, f32 dt) const;
 };
 
+// Keep the view inside `bounds` — the level's extent in world units.
+//
+// The clamp is on what the camera can SEE, not on where it sits, which is why it needs the
+// viewport and the zoom and cannot be a plain clamp on position. An axis whose bounds are
+// narrower than the view is centred instead: a level shorter than the screen should sit in
+// the middle, not jammed against an edge.
+void clampToBounds(Camera2D&, const Rect& bounds);
+
+// Round the camera to whole world units.
+//
+// For pixel art where one world unit is one texel this is not a nicety: an unsnapped camera
+// puts tile edges on fractional texels, and the seams between tiles crawl and shimmer as it
+// moves. Call it LAST, after following and clamping — anything that moves the camera
+// afterwards undoes it.
+//
+// `unitsPerPixel` is the size of one screen pixel in world units. At zoom 3 with 16-unit
+// tiles that is 1/3: snapping to whole world units would still land between screen pixels.
+void snapToPixelGrid(Camera2D&, f32 unitsPerPixel = 1.0f);
+
 // --- Screen shake ----------------------------------------------------------------------------
 //
 // Trauma-based (the Squirrel Eiserloh model): impacts add trauma, trauma decays linearly,

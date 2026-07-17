@@ -38,7 +38,7 @@ rhi::SamplerDesc samplerDescFor(SpriteSampler s) {
 }
 
 SpriteBatch::SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, u32 maxSprites,
-                         rhi::Format depthFormat)
+                         rhi::Format depthFormat, rhi::BlendMode blend)
     : m_device(device), m_maxSprites(maxSprites) {
 
     // Four samplers, made up front. They are tiny, immutable objects and every one
@@ -64,7 +64,7 @@ SpriteBatch::SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, 
     pd.topology           = rhi::PrimitiveTopology::TriangleStrip;
     pd.cull               = rhi::CullMode::None;
     pd.colorFormat        = colorFormat;
-    pd.alphaBlend         = true;
+    pd.blendMode          = blend;
     pd.hasMaterialTexture = true;
     pd.pushConstantSize   = sizeof(Mat4);
     if (depthFormat != rhi::Format::Undefined) {

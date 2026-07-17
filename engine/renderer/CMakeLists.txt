@@ -36,6 +36,8 @@ vortex_add_module(renderer
         src/atlas.cpp
         src/mesh2d.cpp
         src/particles.cpp
+        src/lighting2d.cpp
+        src/pathfinding.cpp
         src/tilemap.cpp
         src/render_graph.cpp
         src/mesh.cpp

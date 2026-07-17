@@ -171,4 +171,31 @@ void zoomProjection(Camera& cam, f32 factor, f32 minFovYRadians, f32 maxFovYRadi
     }
 }
 
+
+void clampToBounds(Camera2D& cam, const Rect& bounds) {
+    if (cam.zoom <= 0.0f) return;
+
+    const f32 halfW = cam.viewportWidth  * 0.5f / cam.zoom;
+    const f32 halfH = cam.viewportHeight * 0.5f / cam.zoom;
+
+    const f32 minX = bounds.x + halfW;
+    const f32 maxX = bounds.x + bounds.width - halfW;
+    const f32 minY = bounds.y + halfH;
+    const f32 maxY = bounds.y + bounds.height - halfH;
+
+    // A level narrower than the view has minX > maxX: there is no position that fills the
+    // screen, so centre it. Clamping with the range inverted would slam the camera to one
+    // edge and leave the level hanging off the other.
+    cam.position.x = (minX > maxX) ? bounds.x + bounds.width * 0.5f
+                                   : clamp(cam.position.x, minX, maxX);
+    cam.position.y = (minY > maxY) ? bounds.y + bounds.height * 0.5f
+                                   : clamp(cam.position.y, minY, maxY);
+}
+
+void snapToPixelGrid(Camera2D& cam, f32 unitsPerPixel) {
+    if (unitsPerPixel <= 0.0f) return;
+    cam.position.x = std::round(cam.position.x / unitsPerPixel) * unitsPerPixel;
+    cam.position.y = std::round(cam.position.y / unitsPerPixel) * unitsPerPixel;
+}
+
 }

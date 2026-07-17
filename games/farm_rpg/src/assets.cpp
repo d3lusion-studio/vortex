@@ -7,6 +7,7 @@
 #include "vortex/platform/filesystem.hpp"
 #include "vortex/rhi/device.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -21,10 +22,50 @@ using namespace vortex;
 
 namespace {
 
-const std::filesystem::path kRoot = VORTEX_FARM_ASSET_DIR;
+// Where the art actually is, decided once at runtime rather than baked in.
+//
+// VORTEX_FARM_ASSET_DIR is an absolute path into whatever source tree built the binary.
+// That is right for a dev build and useless anywhere else: copy the executable to another
+// machine and its art is still on the build box. So the search runs outward from the things
+// that travel WITH the binary, and only falls back to the build-time path last:
+//
+//   1. $VORTEX_FARM_ASSETS  — an explicit override, for a test or an odd install
+//   2. <exe>/assets/2d/FarmRPG, then <exe>/../assets/2d/FarmRPG — a shipped layout, art
+//      beside the executable or one level above it
+//   3. VORTEX_FARM_ASSET_DIR — the source tree, which is where it is during development
+//
+// Each candidate is probed for a directory the pack actually has, not merely for existing:
+// an empty "assets" folder next to the binary would otherwise win and then fail on the
+// first texture, a long way from here.
+[[nodiscard]] const std::filesystem::path& assetRoot() {
+    static const std::filesystem::path root = [] {
+        std::error_code ec;
+        const auto usable = [&](const std::filesystem::path& p) {
+            return !p.empty() && std::filesystem::exists(p / "Tileset", ec);
+        };
+
+        if (const char* env = std::getenv("VORTEX_FARM_ASSETS")) {
+            const std::filesystem::path p(env);
+            if (usable(p)) return p;
+            VORTEX_WARN("Farm", "VORTEX_FARM_ASSETS=%s holds no art; ignoring it", env);
+        }
+
+        const std::filesystem::path exeDir = pf::executableDir();
+        if (!exeDir.empty()) {
+            for (const std::filesystem::path& candidate :
+                 {exeDir / "assets" / "2d" / "FarmRPG",
+                  exeDir.parent_path() / "assets" / "2d" / "FarmRPG"}) {
+                if (usable(candidate)) return candidate;
+            }
+        }
+
+        return std::filesystem::path{VORTEX_FARM_ASSET_DIR};
+    }();
+    return root;
+}
 
 [[nodiscard]] std::string path(const std::string& relative) {
-    return (kRoot / relative).string();
+    return (assetRoot() / relative).string();
 }
 
 [[nodiscard]] assets::Image loadImage(pf::IFileSystem& fs, const std::string& relative) {
@@ -201,6 +242,8 @@ renderer::BlobSet soilBlobSet() {
 }
 
 bool loadAssets(app::App& app, ecs::Scene& scene, const CharacterLook& look, Assets& out) {
+    VORTEX_INFO("Farm", "Art: %s", assetRoot().string().c_str());
+
     // --- Ground, one page per season ------------------------------------------
     for (i32 s = 0; s < 4; ++s) {
         out.groundTex[s] = app.loadTexture(path(kSeasonGround[s]).c_str());
@@ -305,15 +348,20 @@ bool loadAssets(app::App& app, ecs::Scene& scene, const CharacterLook& look, Ass
         bool        loop;
         DirClips*   clips;
         f32*        duration;
+        // The frame the tool actually meets the ground, or -1 for a clip with no impact.
+        // Read off the art: it is a fact about the animation, which is why it lives next
+        // to the animation and reaches gameplay as an event rather than as a fraction of
+        // the clip's length guessed at the call site.
+        i32 hitFrame;
     };
 
     const ActionSpec specs[] = {
-        {"1. Idle",                              "",         4,  6.0f, true,  &out.clips.idle,   nullptr},
-        {"2. Walk",                              "",         6, 10.0f, true,  &out.clips.walk,   nullptr},
-        {"3. Run",                               "",         8, 14.0f, true,  &out.clips.run,    nullptr},
-        {"4. Pickaxe, Hoe and Catching insects", "Hoe",      6, 12.0f, false, &out.clips.hoe,    &out.clips.hoeDuration},
-        {"7. Watering",                          "Watering", 8, 14.0f, false, &out.clips.water,  &out.clips.waterDuration},
-        {"5. Axe and Sickle",                    "Sickle",   6, 12.0f, false, &out.clips.sickle, &out.clips.sickleDuration},
+        {"1. Idle",                              "",         4,  6.0f, true,  &out.clips.idle,   nullptr,                    -1},
+        {"2. Walk",                              "",         6, 10.0f, true,  &out.clips.walk,   nullptr,                    -1},
+        {"3. Run",                               "",         8, 14.0f, true,  &out.clips.run,    nullptr,                    -1},
+        {"4. Pickaxe, Hoe and Catching insects", "Hoe",      6, 12.0f, false, &out.clips.hoe,    &out.clips.hoeDuration,      3},
+        {"7. Watering",                          "Watering", 8, 14.0f, false, &out.clips.water,  &out.clips.waterDuration,    4},
+        {"5. Axe and Sickle",                    "Sickle",   6, 12.0f, false, &out.clips.sickle, &out.clips.sickleDuration,   3},
     };
 
     for (const ActionSpec& spec : specs) {
@@ -332,6 +380,11 @@ bool loadAssets(app::App& app, ecs::Scene& scene, const CharacterLook& look, Ass
         *spec.clips = addDirClips(scene, sheet, spec.framesPerDir, spec.fps, spec.loop);
         if (spec.duration != nullptr)
             *spec.duration = static_cast<f32>(spec.framesPerDir) / spec.fps;
+
+        if (spec.hitFrame >= 0)
+            for (u32 d = 0; d < 4; ++d)
+                scene.animations.addEvent(spec.clips->byDir[d],
+                                          static_cast<u32>(spec.hitFrame), kHitEvent);
     }
 
     return true;

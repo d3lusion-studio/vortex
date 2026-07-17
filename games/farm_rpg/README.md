@@ -4,10 +4,27 @@ A Stardew-shaped farming sim built on Vortex, using the
 [FarmRPG asset pack](https://emanuelledev.itch.io) by **EmanuelleDev** (credit required by
 the pack's licence — see `assets/2d/FarmRPG/Documentation.txt`).
 
-```
+```bash
 cmake --build build/relwithdebinfo --target farm_rpg
 ./build/relwithdebinfo/games/farm_rpg/farm_rpg
 ```
+
+That binary is the game — on Linux an executable has no `.exe` suffix; that is a Windows
+convention. It runs straight from the build directory, finding the art in the source tree.
+
+To get a copy you can move or send:
+
+```bash
+cmake --build build/relwithdebinfo --target farm_rpg_dist
+# -> build/relwithdebinfo/dist/farm_rpg/   (the executable + assets/ beside it)
+```
+
+The game looks for its art next to the executable first and only falls back to the
+build-time source path, so the packaged folder works from any directory on any machine
+with the same libc and a Vulkan driver. `$VORTEX_FARM_ASSETS` overrides the search.
+
+It is not a cross-platform build: this produces a Linux ELF. A Windows `.exe` would mean
+building on Windows or cross-compiling with MinGW, which nothing here is set up for yet.
 
 ## The loop
 
@@ -31,6 +48,7 @@ Energy limits the day and 2am ends it whether you are ready or not.
 | `1`..`0` | select hotbar item |
 | `Space` / left click | use held item on the tile you face |
 | `E` | interact — shop, shipping bin, bed |
+| `F1` | debug overlay — entity inspector, perf graphs |
 | `F5` / `F9` | save / load |
 | `Esc` | quit (autosaves) |
 

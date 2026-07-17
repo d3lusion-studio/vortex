@@ -68,8 +68,13 @@ struct NineSlice {
 
 class SpriteBatch {
 public:
+    // `blend` is fixed at construction because it is baked into the pipeline: a batcher
+    // draws one way. A scene that needs additive glow on top of alpha sprites wants two
+    // batchers, drawn in order — which is also what keeps the sort inside each of them
+    // meaningful, since additive draws do not care about order and alpha ones do.
     SpriteBatch(rhi::IGraphicsDevice& device, rhi::Format colorFormat, u32 maxSprites = 100000,
-                rhi::Format depthFormat = rhi::Format::Undefined);
+                rhi::Format depthFormat = rhi::Format::Undefined,
+                rhi::BlendMode blend = rhi::BlendMode::Alpha);
     ~SpriteBatch();
 
     SpriteBatch(const SpriteBatch&)            = delete;

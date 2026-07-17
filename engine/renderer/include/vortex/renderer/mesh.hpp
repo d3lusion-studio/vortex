@@ -47,7 +47,7 @@ struct MeshVertex {
 
 enum class LightType : u32 { Directional = 0, Point = 1, Spot = 2 };
 
-struct Light {
+struct Light {  
     LightType type = LightType::Point;
 
     Vec3 position{0.0f, 0.0f, 0.0f};      // point/spot
