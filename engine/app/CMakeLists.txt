@@ -1,6 +1,7 @@
 vortex_add_module(app
     SOURCES
         src/app.cpp
+        src/model_loader.cpp
         src/scene_manager.cpp
     PUBLIC_DEPS
         # All of these are reachable through App's accessors, so a game that links

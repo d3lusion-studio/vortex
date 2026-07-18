@@ -71,13 +71,25 @@ static Mat4 identity();
 static Mat4 translation(f32 x, f32 y, f32 z);
 static Mat4 scaling(f32 x, f32 y, f32 z);
 static Mat4 rotationX/Y/Z(f32 radians);
-static Mat4 ortho(f32 l, f32 r, f32 b, f32 t, f32 near, f32 far);   // Vulkan Y-down, depth [0,1]
+static Mat4 ortho(f32 l, f32 r, f32 b, f32 t, f32 near, f32 far);   // 2D — Vulkan Y-down, depth [0,1]
+static Mat4 orthoRH(f32 l, f32 r, f32 b, f32 t, f32 near, f32 far); // 3D — right-handed, đi với lookAt
 static Mat4 perspective(f32 fovYRadians, f32 aspect, f32 near, f32 far);
 static Mat4 lookAt(Vec3 eye, Vec3 center, Vec3 up);
 f32&  at(int row, int col);                 // truy cập phần tử
 Mat4  operator*(const Mat4&) const;         // nhân ma trận
 Vec4  operator*(const Vec4&) const;         // biến đổi vector
 ```
+
+> ⚠️ **`ortho` và `orthoRH` không thay thế được cho nhau.**
+>
+> | Hàm | Dùng cho | Quy ước |
+> |---|---|---|
+> | `Mat4::ortho` | camera 2D | Y-down kiểu Vulkan, z là khoá sắp lớp |
+> | `Mat4::orthoRH` | camera 3D trực giao, shadow map | thuận tay phải, đi với `lookAt`, nhìn theo −Z |
+>
+> Dùng nhầm hàm thì **toàn bộ cảnh bị clip sạch** và render target ra trống trơn — không có
+> lỗi, không có cảnh báo, không có validation error nào. Đây là một trong những lỗi tốn thời
+> gian nhất trong repo này. Xem [examples/camera3d](../examples/camera3d/).
 
 `Quat` (đơn vị mặc định):
 

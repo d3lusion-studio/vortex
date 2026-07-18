@@ -22,7 +22,8 @@ namespace vortex::jobs    { class JobSystem; }
 namespace vortex::assets  { class AssetManager; }
 namespace vortex::audio   { class IAudioEngine; }
 namespace vortex::physics { class PhysicsWorld; }
-namespace vortex::renderer { class SpriteBatch; class Camera2D; class ParticleWorld; class Lighting2D; }
+namespace vortex::renderer { class SpriteBatch; class Camera2D; class ParticleWorld; class Lighting2D;
+                             class MeshRenderer; struct Camera; struct SceneLighting; }
 
 namespace vortex::app {
 
@@ -43,6 +44,14 @@ struct AppConfig {
     f32 maxFrameTime = 0.25f;
 
     u32 maxSprites = 100000;
+
+    // Draw a 3D scene under the 2D overlay. App builds a MeshRenderer, a depth buffer and a
+    // sun-lit shadow pass; the game submits meshes from onRender3D and the sprites/onUi
+    // layers compose on top as a HUD.
+    //
+    // Implies HDR + tone mapping (a 3D scene wants them), so it turns postProcess on. The 2D
+    // sprite path keeps working unchanged — a 3D game with a 2D HUD is the point.
+    bool render3D = false;
 
     // 2D lighting: an ambient colour the world is multiplied by, with lights added back
     // into it. Off by default — a scene at full daylight would pay for a buffer and a
@@ -161,6 +170,9 @@ public:
     using RenderFn = std::function<void(App&, renderer::SpriteBatch&)>;
     // Runs on the main thread during command recording — see onRawRender.
     using RawRenderFn = std::function<void(App&, rhi::ICommandList&)>;
+    // Submit meshes for this frame — see onRender3D. Runs on the main thread during
+    // recording, like onRawRender.
+    using Render3DFn = std::function<void(App&, renderer::MeshRenderer&)>;
 
     explicit App(AppConfig config = {});
     ~App();
@@ -204,6 +216,18 @@ public:
     // during simulation.
     App& onRawRender(RawRenderFn fn);
 
+    // Submit this frame's meshes. Null unless AppConfig::render3D is on.
+    //
+    // Call mesh.drawMesh() / mesh.submit() here; the loop has already called begin() with
+    // camera3d() and lighting3d(), and records the shadow and lit passes after. Meshes are
+    // resubmitted every frame, like sprites — there is no retained 3D scene.
+    //
+    // UNLIKE onRender (which fills the 2D batch during simulation, on the game thread when
+    // threaded), this runs during recording on the MAIN thread — the same phase as
+    // onRawRender. It is why render3D refuses threadedSimulation: the two would read and
+    // write camera3d from different threads at once.
+    App& onRender3D(Render3DFn fn);
+
     App& onShutdown(StartFn fn);
 
     // --- Plugins ---------------------------------------------------------------
@@ -242,6 +266,13 @@ public:
     // Submit into it from a fixed/variable update, not onRender: it is CPU state, and the
     // loop reads it on the main thread when it records the frame.
     [[nodiscard]] renderer::Lighting2D* lights();
+
+    // The 3D renderer, for building meshes and materials. Null unless render3D is on.
+    [[nodiscard]] renderer::MeshRenderer* mesh3d();
+    // The 3D camera and lighting the loop draws with. Move the camera and set the sun on
+    // these; the loop reads them each frame. Only meaningful when render3D is on.
+    [[nodiscard]] renderer::Camera&        camera3d();
+    [[nodiscard]] renderer::SceneLighting& lighting3d();
     [[nodiscard]] pf::IWindow&             window();
 
     // The raw device. Reach for actions() first — a game that reads keys directly

@@ -340,3 +340,15 @@ vortex_embed_asset(assets_demo
 # budget. No window or GPU, so it is a CI check for the pathfinder.
 add_executable(pathfinding pathfinding/main.cpp)
 target_link_libraries(pathfinding PRIVATE Vortex::vortex)
+
+# Headless: the UTF-8 decoder every rendered string is read through. No window or GPU, so
+# it is a CI check for the thing whose failure mode is invisible — dropped accents.
+add_executable(text_check text/main.cpp)
+target_link_libraries(text_check PRIVATE Vortex::vortex)
+
+# glTF model loading on the App 3D path — Bevy's "Load glTF" / "Scene Viewer". Loads
+# cato.gltf as entities the render3D loop draws. VORTEX_SCENEVIEWER_CHECK=1 self-checks the
+# import (needs a GPU, like every App example).
+add_executable(scene_viewer scene_viewer/main.cpp)
+target_link_libraries(scene_viewer PRIVATE Vortex::vortex)
+target_compile_definitions(scene_viewer PRIVATE VORTEX_MODEL_DIR="${CMAKE_SOURCE_DIR}/assets/models")

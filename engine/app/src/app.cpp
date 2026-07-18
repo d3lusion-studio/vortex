@@ -18,7 +18,10 @@
 #include "vortex/physics/physics_world.hpp"
 #include "vortex/platform/window.hpp"
 #include "vortex/renderer/camera2d.hpp"
+#include "vortex/renderer/camera.hpp"
 #include "vortex/renderer/lighting2d.hpp"
+#include "vortex/ecs/systems.hpp"
+#include "vortex/renderer/mesh.hpp"
 #include "vortex/renderer/sprite_batch.hpp"
 #include "vortex/rhi/command_list.hpp"
 #include "vortex/rhi/device.hpp"
@@ -42,6 +45,10 @@ namespace vortex::app {
 // rather than full floats: RGBA32F cannot be alpha-blended into under WebGPU, and blending
 // is exactly what a sprite does.
 inline constexpr rhi::Format kHdrFormat = rhi::Format::R16G16B16A16_SFLOAT;
+
+// The 3D scene's depth format. D32 float is what the mesh examples use and what the shadow
+// path assumes.
+inline constexpr rhi::Format kDepthFormat = rhi::Format::D32_SFLOAT;
 
 // The overlay's view-projection: framebuffer pixels, origin at the centre, +y up. This is
 // Camera2D's projection at zoom 1 with the camera at the origin — stated directly rather
@@ -96,6 +103,13 @@ struct App::Impl {
     // Only built when AppConfig::lighting2D is on.
     std::unique_ptr<renderer::Lighting2D> lights;
 
+    // Only built when AppConfig::render3D is on. The camera and lighting are plain state the
+    // game drives and the loop reads; the depth format is the one the whole 3D stack uses.
+    std::unique_ptr<renderer::MeshRenderer> mesh;
+    renderer::Camera                        camera3d;
+    renderer::SceneLighting                 lighting3d;
+    std::vector<renderer::MeshInstance>     meshInstances;   // reused each frame, like slot.items
+
     SceneManager          scenes;
     ecs::SerializeContext serialize;
     pf::InputMap          actions;
@@ -116,6 +130,7 @@ struct App::Impl {
     std::vector<App::RenderFn> renderFns;
     std::vector<App::RenderFn> uiFns;
     std::vector<App::RawRenderFn> rawRenderFns;
+    std::vector<App::Render3DFn>  render3dFns;
     std::vector<App::StartFn>  shutdownFns;
 
     std::vector<std::unique_ptr<IPlugin>> plugins;
@@ -195,6 +210,17 @@ App::App(AppConfig config) : m_impl(std::make_unique<Impl>()) {
         if (const char* env = std::getenv("VORTEX_MAX_FRAMES"))
             s.config.maxFrames = std::strtoull(env, nullptr, 10);
 
+    // The 3D submission runs during recording on the main thread and reads camera3d /
+    // lighting3d — which a threaded game would be writing from the game thread at the same
+    // time. The two cannot both be true without a data race, so refuse the combination here
+    // rather than let it corrupt a frame intermittently. The single-threaded loop draws 3D
+    // exactly the same, just without the overlap, so this costs a 3D game nothing it had.
+    if (s.config.render3D && s.config.threadedSimulation) {
+        VORTEX_WARN("App", "render3D does not support threadedSimulation; running "
+                           "single-threaded.");
+        s.config.threadedSimulation = false;
+    }
+
     if (config.settingsName != nullptr) {
         s.settingsPath = Settings::defaultPath(config.settingsName);
         if (!s.settingsPath.empty()) {
@@ -224,7 +250,8 @@ App::App(AppConfig config) : m_impl(std::make_unique<Impl>()) {
     // With post-processing on, sprites are drawn into a float target rather than the
     // backbuffer, so the batcher's pipeline must be built for THAT format — a pipeline
     // is bound to the format of the target it renders to.
-    const rhi::Format sceneFormat = config.postProcess ? kHdrFormat : s.swapchain->format();
+    const rhi::Format sceneFormat = (config.postProcess || config.render3D) ? kHdrFormat
+                                                                              : s.swapchain->format();
     s.slots[0].batch =
         std::make_unique<renderer::SpriteBatch>(*s.device, sceneFormat, config.maxSprites);
     s.slots[0].uiBatch = std::make_unique<renderer::SpriteBatch>(
@@ -236,10 +263,20 @@ App::App(AppConfig config) : m_impl(std::make_unique<Impl>()) {
             *s.device, s.swapchain->format(), config.maxUiSprites);
     }
 
-    if (config.postProcess) {
+    // 3D needs the HDR target and tone mapping a 3D scene is authored for, and it draws
+    // through the render graph. Turning it on turns those on too, so a game says render3D
+    // and gets the whole stack rather than three coupled flags it has to keep in sync.
+    const bool wantsGraph = config.postProcess || config.render3D;
+    if (wantsGraph) {
         s.graph = std::make_unique<renderer::RenderGraph>(*s.device);
         s.post  = std::make_unique<renderer::PostProcess>(*s.device, kHdrFormat,
                                                           s.swapchain->format());
+    }
+    if (config.render3D) {
+        s.mesh = std::make_unique<renderer::MeshRenderer>(*s.device, kHdrFormat, kDepthFormat);
+        s.camera3d.mode   = renderer::Camera::Mode::Perspective;
+        s.camera3d.position = {0.0f, 6.0f, 12.0f};
+        s.camera3d.target   = {0.0f, 0.0f, 0.0f};
     }
 
     // The composite multiplies over whatever the world was drawn into — the HDR target
@@ -304,6 +341,11 @@ App& App::onRawRender(RawRenderFn fn) {
     if (fn) m_impl->rawRenderFns.push_back(std::move(fn));
     return *this;
 }
+
+App& App::onRender3D(Render3DFn fn) {
+    if (fn) m_impl->render3dFns.push_back(std::move(fn));
+    return *this;
+}
 App& App::onShutdown(StartFn fn) {
     if (fn) m_impl->shutdownFns.push_back(std::move(fn));
     return *this;
@@ -347,6 +389,9 @@ ecs::Registry&           App::registry()  { return m_impl->scenes.active().regis
 renderer::Camera2D&      App::camera()    { return m_impl->scenes.active().camera; }
 renderer::ParticleWorld& App::particles() { return m_impl->scenes.active().particles; }
 renderer::Lighting2D*    App::lights()    { return m_impl->lights.get(); }
+renderer::MeshRenderer*  App::mesh3d()    { return m_impl->mesh.get(); }
+renderer::Camera&        App::camera3d()  { return m_impl->camera3d; }
+renderer::SceneLighting& App::lighting3d(){ return m_impl->lighting3d; }
 
 rhi::Format App::surfaceFormat() const { return m_impl->swapchain->format(); }
 pf::IWindow&             App::window()    { return *m_impl->window; }
@@ -664,8 +709,65 @@ void App::render(u32 slotIndex) {
         const auto sceneHdr   = s.graph->colorTarget("scene_hdr", frame.width, frame.height,
                                                      kHdrFormat);
 
+        // --- 3D first, under everything else ------------------------------------------
+        //
+        // The mesh pass owns the clear of sceneHdr and writes the depth the 2D layers then
+        // ignore, so the world's geometry sits behind a HUD drawn flat on top of it.
+        bool meshDrew = false;
+        if (s.mesh) {
+            s.camera3d.viewportWidth  = static_cast<f32>(frame.width);
+            s.camera3d.viewportHeight = static_cast<f32>(frame.height);
+            s.camera3d.aspect         = frame.height > 0
+                                          ? static_cast<f32>(frame.width) / static_cast<f32>(frame.height)
+                                          : 1.0f;
+
+            s.mesh->begin(s.camera3d, s.lighting3d);
+
+            // Auto-draw the scene's 3D entities, the way the 2D path auto-draws SpriteComp:
+            // a game spawns Transform3D + MeshComp and the loop submits them, with no per-
+            // frame call of its own. onRender3D stays for immediate-mode meshes on top.
+            //
+            // Safe on the main thread here because render3D refuses threadedSimulation, so
+            // the game thread is not touching this registry — including the prevModel that
+            // extractMeshes writes back for motion blur.
+            // extractMeshes APPENDS — every mesh example clears first, and so must this, or
+            // the buffer grows by the whole scene every frame and re-submits all of history.
+            s.meshInstances.clear();
+            ecs::extractMeshes(s.scenes.active().registry(), s.meshInstances);
+            if (!s.meshInstances.empty())
+                s.mesh->submit(s.meshInstances.data(), s.meshInstances.size());
+
+            for (const auto& fn : s.render3dFns) fn(*this, *s.mesh);
+
+            const auto sceneDepth = s.graph->depthTarget("scene_depth", frame.width, frame.height);
+            const u32  shadowRes  = s.lighting3d.shadow.resolution;
+            const auto shadowMap  = s.graph->depthTarget("shadow_map", shadowRes, shadowRes, true);
+
+            s.graph->addPass("shadow",
+                [&](renderer::RenderGraph::PassBuilder& b) { b.writeDepth(shadowMap); },
+                [&](rhi::ICommandList& cmd) { s.mesh->renderShadow(cmd); });
+            s.mesh->setShadowMap(s.graph->texture(shadowMap));
+
+            s.graph->addPass("mesh",
+                [&](renderer::RenderGraph::PassBuilder& b) {
+                    b.writeColor(sceneHdr, clearColor);
+                    b.writeDepth(sceneDepth);
+                },
+                [&](rhi::ICommandList& cmd) {
+                    cmd.setViewport(viewport);
+                    cmd.setScissor(0, 0, frame.width, frame.height);
+                    s.mesh->end(cmd);
+                });
+            meshDrew = true;
+        }
+
+        // The sprites LOAD the target when 3D already cleared it — otherwise they clear it
+        // themselves, which is the pure-2D path unchanged.
         s.graph->addPass("sprites",
-            [&](renderer::RenderGraph::PassBuilder& b) { b.writeColor(sceneHdr, clearColor); },
+            [&](renderer::RenderGraph::PassBuilder& b) {
+                b.writeColor(sceneHdr, clearColor,
+                             meshDrew ? rhi::LoadOp::Load : rhi::LoadOp::Clear);
+            },
             [&](rhi::ICommandList& cmd) {
                 cmd.setViewport(viewport);
                 cmd.setScissor(0, 0, frame.width, frame.height);
