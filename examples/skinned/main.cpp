@@ -41,6 +41,12 @@
 
 using namespace vortex;
 
+// Filled in by CMake with an absolute path, so the example runs from any working directory
+// rather than only from the repo root. The relative fallback keeps a standalone build working.
+#ifndef VORTEX_MODEL_DIR
+#define VORTEX_MODEL_DIR "assets/models"
+#endif
+
 namespace {
 
 rhi::TextureHandle loadTexture(rhi::IGraphicsDevice& device, const std::string& path) {
@@ -87,7 +93,7 @@ int main() {
     renderer::RenderGraph  graph(*device);
 
     // --- Import ------------------------------------------------------------
-    const std::string modelDir = "assets/models/cato/";
+    const std::string modelDir = std::string(VORTEX_MODEL_DIR) + "/cato/";
     std::string error;
     assets::GltfModel model = assets::loadGltf((modelDir + "cato.gltf").c_str(), &error);
     if (!model.valid()) {

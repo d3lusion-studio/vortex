@@ -160,6 +160,7 @@ target_link_libraries(bloom2d PRIVATE Vortex::vortex)
 
 add_executable(skinned skinned/main.cpp)
 target_link_libraries(skinned PRIVATE Vortex::vortex)
+target_compile_definitions(skinned PRIVATE VORTEX_MODEL_DIR="${CMAKE_SOURCE_DIR}/assets/models")
 
 # Headless: exercises the animation state machine + root motion with no window or GPU,
 # so it doubles as a CI check for the anim module.
